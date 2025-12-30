@@ -12,21 +12,28 @@ export function GameMap() {
 
   const currentTank = tanks[currentTankIndex];
 
-  // Get the effective position for a tank (considering queued moves)
-  const getEffectivePosition = useCallback((tankId: string): Position => {
-    if (tankId !== currentTank.id) {
-      return tanks.find(t => t.id === tankId)?.position || { x: 0, y: 0 };
-    }
-    
-    // For current tank, calculate position after all queued moves
-    let pos = currentTank.position;
-    for (const action of actionQueue) {
-      if (action.type === 'move') {
-        pos = action.targetPosition;
-      }
-    }
-    return pos;
-  }, [currentTank, actionQueue, tanks]);
+  // Safety check - if current tank is dead, don't render interactive elements
+  if (!currentTank || currentTank.health <= 0) {
+    return (
+      <div className="game-map-container">
+        <div className="game-map">
+          <div className="game-map__ground" />
+          {obstacles.map((obstacle) => (
+            <div
+              key={obstacle.id}
+              className="game-map__obstacle"
+              style={{
+                left: `${obstacle.position.x}%`,
+                top: `${obstacle.position.y}%`,
+                width: `${obstacle.width}%`,
+                height: `${obstacle.height}%`,
+              }}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   // Handle animation during execution
   useEffect(() => {
@@ -36,16 +43,29 @@ export function GameMap() {
     }
 
     const currentAction = actionQueue[executingActionIndex];
-    if (!currentAction || currentAction.type !== 'move') return;
+    if (!currentAction) {
+      setAnimatedPositions({});
+      return;
+    }
 
-    // Get starting position (after previous moves in queue)
-    let startPos = currentTank.position;
+    // Calculate current position after all previous moves
+    let currentPos = currentTank.position;
     for (let i = 0; i < executingActionIndex; i++) {
       if (actionQueue[i].type === 'move') {
-        startPos = actionQueue[i].targetPosition;
+        currentPos = actionQueue[i].targetPosition;
       }
     }
 
+    if (currentAction.type === 'shoot') {
+      // For shoot actions, just keep tank at current position
+      setAnimatedPositions({
+        [currentTank.id]: currentPos,
+      });
+      return;
+    }
+
+    // Animate move action
+    const startPos = currentPos;
     const endPos = currentAction.targetPosition;
     const duration = 600;
     const startTime = performance.now();
@@ -57,23 +77,27 @@ export function GameMap() {
       // Ease out cubic
       const eased = 1 - Math.pow(1 - progress, 3);
       
-      const currentPos = {
+      const animatedPos = {
         x: startPos.x + (endPos.x - startPos.x) * eased,
         y: startPos.y + (endPos.y - startPos.y) * eased,
       };
 
-      setAnimatedPositions(prev => ({
-        ...prev,
-        [currentTank.id]: currentPos,
-      }));
+      setAnimatedPositions({
+        [currentTank.id]: animatedPos,
+      });
 
       if (progress < 1) {
         requestAnimationFrame(animate);
+      } else {
+        // Keep the tank at the end position
+        setAnimatedPositions({
+          [currentTank.id]: endPos,
+        });
       }
     };
 
     requestAnimationFrame(animate);
-  }, [phase, executingActionIndex, actionQueue, currentTank]);
+  }, [phase, executingActionIndex, actionQueue, currentTank.position, currentTank.id]);
 
   const handleMapClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (phase !== 'planning' || !canQueueMore) return;
@@ -160,12 +184,21 @@ export function GameMap() {
         ))}
 
         {/* Shot animation */}
-        {phase === 'executing' && executingActionIndex >= 0 && actionQueue[executingActionIndex]?.type === 'shoot' && (
-          <ShotTrail
-            from={getEffectivePosition(currentTank.id)}
-            to={actionQueue[executingActionIndex].targetPosition}
-          />
-        )}
+        {phase === 'executing' && executingActionIndex >= 0 && actionQueue[executingActionIndex]?.type === 'shoot' && (() => {
+          // Calculate position for the shot (after all previous moves)
+          let shotFromPos = currentTank.position;
+          for (let i = 0; i < executingActionIndex; i++) {
+            if (actionQueue[i].type === 'move') {
+              shotFromPos = actionQueue[i].targetPosition;
+            }
+          }
+          return (
+            <ShotTrail
+              from={shotFromPos}
+              to={actionQueue[executingActionIndex].targetPosition}
+            />
+          );
+        })()}
 
         {/* Tanks */}
         {tanks.map((tank) => {

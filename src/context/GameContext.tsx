@@ -149,15 +149,51 @@ function gameReducer(state: GameState, action: GameAction): GameState {
     case 'EXECUTE_NEXT_ACTION': {
       const nextIndex = state.executingActionIndex + 1;
       if (nextIndex >= state.actionQueue.length) {
-        // All actions executed, end turn
+        // All actions executed, NOW update tank position to final location
+        let finalPosition = state.tanks[state.currentTankIndex].position;
+        for (const action of state.actionQueue) {
+          if (action.type === 'move') {
+            finalPosition = action.targetPosition;
+          }
+        }
+
+        let newTanks = state.tanks.map((tank, i) =>
+          i === state.currentTankIndex
+            ? { ...tank, position: finalPosition }
+            : tank
+        );
+
+        // Check for game over
+        const aliveTanks = newTanks.filter(t => t.health > 0);
+        if (aliveTanks.length <= 1) {
+          // Game over!
+          return {
+            ...state,
+            tanks: newTanks,
+            phase: 'game-over',
+            winner: aliveTanks[0]?.name || null,
+            executingActionIndex: -1,
+            actionQueue: [],
+            animatingTank: null,
+            shotAnimation: null,
+          };
+        }
+
+        // Find next alive tank
+        let nextTankIndex = (state.currentTankIndex + 1) % state.tanks.length;
+        while (newTanks[nextTankIndex].health <= 0) {
+          nextTankIndex = (nextTankIndex + 1) % state.tanks.length;
+        }
+
         return {
           ...state,
+          tanks: newTanks,
           phase: 'planning',
           executingActionIndex: -1,
           actionQueue: [],
           animatingTank: null,
           shotAnimation: null,
-          currentTankIndex: (state.currentTankIndex + 1) % state.tanks.length,
+          currentTankIndex: nextTankIndex,
         };
       }
       return {
@@ -191,9 +227,11 @@ function gameReducer(state: GameState, action: GameAction): GameState {
     }
 
     case 'COMPLETE_MOVE': {
+      // Update rotation but DON'T update position yet
+      // Position will be updated when all actions are complete
       const newTanks = state.tanks.map((tank, i) =>
         i === state.currentTankIndex
-          ? { ...tank, position: action.position, rotation: action.rotation }
+          ? { ...tank, rotation: action.rotation }
           : tank
       );
       return {
@@ -209,10 +247,10 @@ function gameReducer(state: GameState, action: GameAction): GameState {
 
       // Check if we hit an enemy tank
       let newTanks = state.tanks;
-      let winner: string | null = null;
 
       const hitTankIndex = state.tanks.findIndex((tank, i) => {
         if (i === state.currentTankIndex) return false;
+        if (tank.health <= 0) return false; // Skip already dead tanks
         const distance = getDistance(tank.position, targetPos);
         return distance < TANK_SIZE;
       });
@@ -221,11 +259,6 @@ function gameReducer(state: GameState, action: GameAction): GameState {
         newTanks = state.tanks.map((tank, i) =>
           i === hitTankIndex ? { ...tank, health: tank.health - 1 } : tank
         );
-
-        const deadTank = newTanks.find((t) => t.health <= 0);
-        if (deadTank) {
-          winner = newTanks.find((t) => t.health > 0)?.name || null;
-        }
       }
 
       // Update rotation to face target
@@ -234,19 +267,30 @@ function gameReducer(state: GameState, action: GameAction): GameState {
         i === state.currentTankIndex ? { ...tank, rotation: newRotation } : tank
       );
 
+      // Check for game over
+      const aliveTanks = newTanks.filter(t => t.health > 0);
+      const isGameOver = aliveTanks.length <= 1;
+      const winner = isGameOver ? (aliveTanks[0]?.name || null) : null;
+
       return {
         ...state,
         tanks: newTanks,
         shotAnimation: null,
         winner,
-        phase: winner ? 'game-over' : state.phase,
+        phase: isGameOver ? 'game-over' : state.phase,
       };
     }
 
     case 'END_TURN': {
+      // Find next alive tank
+      let nextTankIndex = (state.currentTankIndex + 1) % state.tanks.length;
+      while (state.tanks[nextTankIndex].health <= 0) {
+        nextTankIndex = (nextTankIndex + 1) % state.tanks.length;
+      }
+
       return {
         ...state,
-        currentTankIndex: (state.currentTankIndex + 1) % state.tanks.length,
+        currentTankIndex: nextTankIndex,
         actionQueue: [],
         phase: 'planning',
       };

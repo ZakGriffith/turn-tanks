@@ -9,6 +9,17 @@ export function Controls() {
   const canExecute = actionQueue.length > 0 && phase === 'planning';
   const isExecuting = phase === 'executing';
 
+  // Safety check - if current tank is dead, show minimal UI
+  if (!currentTank || currentTank.health <= 0) {
+    return (
+      <div className="controls">
+        <div className="controls__executing">
+          <span>Switching to next player...</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="controls">
       <div className="controls__turn-info">
