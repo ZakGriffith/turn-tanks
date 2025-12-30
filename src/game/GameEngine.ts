@@ -5,8 +5,9 @@ import { Tank, Obstacle, Position, GameState, Particle } from './types';
 // Configuration
 const TANK_SIZE = 40;
 const ACTIONS_PER_TURN = 2;
-const MOVE_DURATION = 0.6;
+const MOVE_DURATION = 2.0; // Slower tank movement (was 0.6)
 const SHOT_DURATION = 0.3;
+const MAX_MOVE_DISTANCE = 150; // Maximum pixels a tank can move per action
 
 export class GameEngine {
   private app!: PIXI.Application;
@@ -107,6 +108,7 @@ export class GameEngine {
     this.app.ticker.add(this.update.bind(this));
 
     this.isInitialized = true;
+    this.drawActionMarkers(); // Show initial range ring
     this.emitState();
   }
 
@@ -288,6 +290,13 @@ export class GameEngine {
 
     if (this.isPositionBlocked(target) || !this.isWithinBounds(target)) return;
 
+    // For move actions, check distance limit
+    if (this.state.selectedActionType === 'move') {
+      const effectivePos = this.getEffectivePosition();
+      const distance = Math.hypot(target.x - effectivePos.x, target.y - effectivePos.y);
+      if (distance > MAX_MOVE_DISTANCE) return; // Out of range
+    }
+
     this.state.actionQueue.push({
       id: Math.random().toString(36).substring(7),
       type: this.state.selectedActionType,
@@ -296,6 +305,18 @@ export class GameEngine {
     
     this.drawActionMarkers();
     this.emitState();
+  }
+
+  // Get the tank's effective position after all queued moves
+  private getEffectivePosition(): Position {
+    const tank = this.state.tanks[this.state.currentPlayerIndex];
+    let pos = { ...tank.position };
+    for (const action of this.state.actionQueue) {
+      if (action.type === 'move') {
+        pos = action.targetPosition;
+      }
+    }
+    return pos;
   }
 
   private isPositionBlocked(pos: Position): boolean {
@@ -317,6 +338,35 @@ export class GameEngine {
     this.uiLayer.removeChildren();
     const tank = this.state.tanks[this.state.currentPlayerIndex];
     let lastPos = tank.position;
+
+    // Draw range ring if move is selected and we can still queue actions
+    if (this.state.selectedActionType === 'move' && this.state.actionQueue.length < this.state.actionsPerTurn) {
+      const effectivePos = this.getEffectivePosition();
+      const rangeRing = new PIXI.Graphics();
+      
+      // Outer glow ring
+      rangeRing.circle(effectivePos.x, effectivePos.y, MAX_MOVE_DISTANCE + 4);
+      rangeRing.stroke({ color: 0x22c55e, width: 2, alpha: 0.1 });
+      
+      // Main ring
+      rangeRing.circle(effectivePos.x, effectivePos.y, MAX_MOVE_DISTANCE);
+      rangeRing.stroke({ color: 0x22c55e, width: 2, alpha: 0.4 });
+      
+      // Inner fill
+      rangeRing.circle(effectivePos.x, effectivePos.y, MAX_MOVE_DISTANCE);
+      rangeRing.fill({ color: 0x22c55e, alpha: 0.05 });
+      
+      // Dashed inner ring for style
+      const dashCount = 32;
+      for (let i = 0; i < dashCount; i += 2) {
+        const startAngle = (i / dashCount) * Math.PI * 2;
+        const endAngle = ((i + 1) / dashCount) * Math.PI * 2;
+        rangeRing.arc(effectivePos.x, effectivePos.y, MAX_MOVE_DISTANCE - 8, startAngle, endAngle);
+        rangeRing.stroke({ color: 0x22c55e, width: 1, alpha: 0.3 });
+      }
+      
+      this.uiLayer.addChild(rangeRing);
+    }
 
     this.state.actionQueue.forEach((action, i) => {
       if (action.type === 'move') {
@@ -346,13 +396,14 @@ export class GameEngine {
   public setActionType(type: 'move' | 'shoot') {
     if (this.isDestroyed) return;
     this.state.selectedActionType = type;
+    this.drawActionMarkers(); // Redraw to show/hide range ring
     this.emitState();
   }
 
   public clearQueue() {
     if (this.isDestroyed) return;
     this.state.actionQueue = [];
-    this.uiLayer.removeChildren();
+    this.drawActionMarkers(); // Redraw to update range ring position
     this.emitState();
   }
 
@@ -399,13 +450,25 @@ export class GameEngine {
 
       const angle = Math.atan2(target.y - tank.position.y, target.x - tank.position.x) + Math.PI / 2;
       this.createDustCloud(tank.position.x, tank.position.y);
+      
+      let lastDustTime = 0;
 
       gsap.to(sprite, {
         x: target.x,
         y: target.y,
         rotation: angle,
         duration: MOVE_DURATION,
-        ease: 'power2.out',
+        ease: 'power2.inOut', // Smoother acceleration/deceleration
+        onUpdate: () => {
+          if (this.isDestroyed) return;
+          
+          // Create dust particles while moving (every ~50ms)
+          const now = Date.now();
+          if (now - lastDustTime > 50) {
+            lastDustTime = now;
+            this.createMovementDust(sprite.x, sprite.y, angle);
+          }
+        },
         onComplete: () => {
           tank.position = { ...target };
           tank.rotation = angle;
@@ -414,6 +477,40 @@ export class GameEngine {
         },
       });
     });
+  }
+
+  private createMovementDust(x: number, y: number, angle: number) {
+    if (this.isDestroyed) return;
+    
+    // Create dust behind the tank (opposite of movement direction)
+    const backX = x - Math.sin(angle) * 15;
+    const backY = y + Math.cos(angle) * 15;
+    
+    // Left track dust
+    const leftX = backX + Math.cos(angle) * 12;
+    const leftY = backY + Math.sin(angle) * 12;
+    
+    // Right track dust
+    const rightX = backX - Math.cos(angle) * 12;
+    const rightY = backY - Math.sin(angle) * 12;
+    
+    // Add particles for both tracks
+    for (let i = 0; i < 2; i++) {
+      const tx = i === 0 ? leftX : rightX;
+      const ty = i === 0 ? leftY : rightY;
+      
+      this.particles.push({
+        x: tx + (Math.random() - 0.5) * 8,
+        y: ty + (Math.random() - 0.5) * 8,
+        vx: (Math.random() - 0.5) * 1.5 - Math.sin(angle) * 0.5,
+        vy: (Math.random() - 0.5) * 1.5 + Math.cos(angle) * 0.5,
+        life: 1,
+        maxLife: 1,
+        size: 2 + Math.random() * 2,
+        color: 0x8b7355,
+        alpha: 0.4 + Math.random() * 0.2,
+      });
+    }
   }
 
   private executeShot(tank: Tank, sprite: PIXI.Container, target: Position): Promise<void> {
@@ -615,6 +712,7 @@ export class GameEngine {
     }
     this.state.currentPlayerIndex = next;
     this.highlightCurrentTank();
+    this.drawActionMarkers(); // Show range ring for new player
   }
 
   private highlightCurrentTank() {
@@ -636,6 +734,7 @@ export class GameEngine {
     this.state = this.createInitialState(this.width, this.height);
     this.createTanks();
     this.highlightCurrentTank();
+    this.drawActionMarkers(); // Show range ring
     this.emitState();
   }
 
