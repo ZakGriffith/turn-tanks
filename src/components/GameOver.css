@@ -1,0 +1,77 @@
+.game-over-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.game-over {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  padding: 48px 64px;
+  border-radius: 16px;
+  text-align: center;
+  box-shadow: 
+    0 24px 48px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  animation: scaleIn 0.4s ease;
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.game-over__title {
+  font-size: 2.5rem;
+  color: #fbbf24;
+  margin: 0 0 16px;
+  text-shadow: 0 0 20px rgba(251, 191, 36, 0.5);
+}
+
+.game-over__winner {
+  font-size: 1.5rem;
+  color: #f0f0f0;
+  margin: 0 0 32px;
+}
+
+.game-over__button {
+  padding: 16px 48px;
+  font-size: 1.25rem;
+  font-weight: 600;
+  background: linear-gradient(145deg, #22c55e 0%, #16a34a 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 16px rgba(34, 197, 94, 0.4);
+}
+
+.game-over__button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(34, 197, 94, 0.5);
+}
+
+.game-over__button:active {
+  transform: translateY(0);
+}
+

@@ -1,13 +1,8 @@
-import './App.css'
+import { Game } from './components/Game';
+import './App.css';
 
 function App() {
-  return (
-    <div className="App">
-      <h1>Turn Tanks</h1>
-      <p>A turn-based tank battle game</p>
-    </div>
-  )
+  return <Game />;
 }
 
-export default App
-
+export default App;
