@@ -142,11 +142,13 @@ export class GameEngine {
       },
     ];
 
+    // Leave enough room above/below horizontal obstacles for tanks (TANK_SIZE + padding)
+    const edgeGap = TANK_SIZE * 2; // Space from edge for tank movement
     const obstacles: Obstacle[] = [
       { id: 'obs1', position: { x: width * 0.3, y: height * 0.25 }, width: 50, height: 100, destructible: false },
       { id: 'obs2', position: { x: width * 0.7, y: height * 0.55 }, width: 50, height: 120, destructible: false },
-      { id: 'obs3', position: { x: width * 0.5, y: height * 0.12 }, width: 80, height: 35, destructible: false },
-      { id: 'obs4', position: { x: width * 0.5, y: height * 0.88 }, width: 80, height: 35, destructible: false },
+      { id: 'obs3', position: { x: width * 0.5, y: edgeGap + 35 }, width: 80, height: 35, destructible: false },
+      { id: 'obs4', position: { x: width * 0.5, y: height - edgeGap - 35 }, width: 80, height: 35, destructible: false },
     ];
 
     return {
@@ -465,6 +467,9 @@ export class GameEngine {
       }
       
       this.uiLayer.addChild(rangeRing);
+      
+      // Draw blocked zones (obstacles with tank padding) as orange
+      this.drawBlockedZones(effectivePos);
     }
 
     this.state.actionQueue.forEach((action, i) => {
@@ -490,6 +495,86 @@ export class GameEngine {
       marker.position.set(action.targetPosition.x, action.targetPosition.y);
       this.uiLayer.addChild(marker);
     });
+  }
+
+  private drawBlockedZones(effectivePos: Position) {
+    const blockedGraphics = new PIXI.Graphics();
+    
+    // Sample points around the range ring to find where movement becomes blocked
+    const angleCount = 72; // Check every 5 degrees
+    const distanceSteps = 15; // Check at multiple distances along each angle
+    const minDist = 20; // Start checking from this distance (not from center)
+    
+    // For each angle, find the max distance you can move and draw blocked area beyond
+    const blockedRays: { angle: number; maxDist: number }[] = [];
+    
+    for (let i = 0; i < angleCount; i++) {
+      const angle = (i / angleCount) * Math.PI * 2;
+      let maxValidDist = 0;
+      
+      // Find the maximum distance we can move in this direction
+      for (let d = 1; d <= distanceSteps; d++) {
+        const dist = minDist + ((d / distanceSteps) * (MAX_MOVE_DISTANCE - minDist));
+        const targetX = effectivePos.x + Math.cos(angle) * dist;
+        const targetY = effectivePos.y + Math.sin(angle) * dist;
+        const target = { x: targetX, y: targetY };
+        
+        const canMove = this.isWithinBounds(target, TANK_SIZE) && 
+                        !this.isPositionBlocked(target) && 
+                        this.isPathClear(effectivePos, target);
+        
+        if (canMove) {
+          maxValidDist = dist;
+        } else {
+          break; // Hit a blocked zone, stop checking further
+        }
+      }
+      
+      blockedRays.push({ angle, maxDist: maxValidDist });
+    }
+    
+    // Draw blocked zones as the area between maxDist and MAX_MOVE_DISTANCE for each angle
+    // Group consecutive angles with similar blocked distances into segments
+    const angleStep = (Math.PI * 2) / angleCount;
+    
+    for (let i = 0; i < blockedRays.length; i++) {
+      const ray = blockedRays[i];
+      const nextRay = blockedRays[(i + 1) % blockedRays.length];
+      
+      // Only draw if there's a blocked area (maxDist < MAX_MOVE_DISTANCE)
+      if (ray.maxDist < MAX_MOVE_DISTANCE - 5 || nextRay.maxDist < MAX_MOVE_DISTANCE - 5) {
+        const startAngle = ray.angle;
+        const endAngle = ray.angle + angleStep;
+        
+        // Draw a trapezoid-like shape from the blocked start to the ring edge
+        const innerDist1 = Math.max(ray.maxDist, minDist);
+        const innerDist2 = Math.max(nextRay.maxDist, minDist);
+        
+        // Only draw if there's actually a blocked region
+        if (innerDist1 < MAX_MOVE_DISTANCE - 5 || innerDist2 < MAX_MOVE_DISTANCE - 5) {
+          blockedGraphics.moveTo(
+            effectivePos.x + Math.cos(startAngle) * innerDist1,
+            effectivePos.y + Math.sin(startAngle) * innerDist1
+          );
+          blockedGraphics.lineTo(
+            effectivePos.x + Math.cos(startAngle) * MAX_MOVE_DISTANCE,
+            effectivePos.y + Math.sin(startAngle) * MAX_MOVE_DISTANCE
+          );
+          blockedGraphics.arc(effectivePos.x, effectivePos.y, MAX_MOVE_DISTANCE, startAngle, endAngle);
+          blockedGraphics.lineTo(
+            effectivePos.x + Math.cos(endAngle) * innerDist2,
+            effectivePos.y + Math.sin(endAngle) * innerDist2
+          );
+          blockedGraphics.lineTo(
+            effectivePos.x + Math.cos(startAngle) * innerDist1,
+            effectivePos.y + Math.sin(startAngle) * innerDist1
+          );
+          blockedGraphics.fill({ color: 0xff6600, alpha: 0.25 });
+        }
+      }
+    }
+    
+    this.uiLayer.addChild(blockedGraphics);
   }
 
   public setActionType(type: 'move' | 'shoot') {
