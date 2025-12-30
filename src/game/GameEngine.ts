@@ -295,12 +295,14 @@ export class GameEngine {
     const effectivePos = this.getEffectivePosition();
     const distance = Math.hypot(target.x - effectivePos.x, target.y - effectivePos.y);
 
-    // For move actions, check distance limit
+    // For move actions, check distance limit and path clearance
     if (this.state.selectedActionType === 'move') {
       if (distance > MAX_MOVE_DISTANCE) return; // Out of range
+      if (!this.isPathClear(effectivePos, target)) return; // Path blocked by obstacle
     }
 
     // For shoot actions, check minimum distance (prevent self-fire)
+    // Note: Shots CAN go through to obstacles - they'll hit the obstacle instead of the target
     if (this.state.selectedActionType === 'shoot') {
       if (distance < MIN_FIRE_DISTANCE) return; // Too close to self
     }
@@ -340,6 +342,88 @@ export class GameEngine {
   private isWithinBounds(pos: Position): boolean {
     const pad = TANK_SIZE;
     return pos.x > pad && pos.x < this.width - pad && pos.y > pad && pos.y < this.height - pad;
+  }
+
+  // Check if a tank can move from 'from' to 'to' without passing through obstacles
+  // Samples the path and checks the tank's bounding box at each sample point
+  private isPathClear(from: Position, to: Position): boolean {
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    // Sample every 10 pixels along the path
+    const samples = Math.max(Math.ceil(distance / 10), 1);
+    
+    for (let i = 0; i <= samples; i++) {
+      const t = i / samples;
+      const samplePos = {
+        x: from.x + (to.x - from.x) * t,
+        y: from.y + (to.y - from.y) * t,
+      };
+      
+      // Check if tank bounding box at this position overlaps any obstacle
+      if (this.isPositionBlocked(samplePos)) {
+        return false;
+      }
+    }
+    
+    return true;
+  }
+
+  // Raycast from 'from' to 'to' and return the first intersection point with an obstacle
+  // Returns null if no obstacle is hit, otherwise returns the impact point
+  private raycastToObstacle(from: Position, to: Position): Position | null {
+    let closestHit: Position | null = null;
+    let closestDist = Infinity;
+
+    for (const obs of this.state.obstacles) {
+      // Get obstacle bounds
+      const left = obs.position.x - obs.width / 2;
+      const right = obs.position.x + obs.width / 2;
+      const top = obs.position.y - obs.height / 2;
+      const bottom = obs.position.y + obs.height / 2;
+
+      // Check intersection with each edge of the rectangle
+      const edges: [Position, Position][] = [
+        [{ x: left, y: top }, { x: right, y: top }],     // Top edge
+        [{ x: right, y: top }, { x: right, y: bottom }], // Right edge
+        [{ x: right, y: bottom }, { x: left, y: bottom }], // Bottom edge
+        [{ x: left, y: bottom }, { x: left, y: top }],   // Left edge
+      ];
+
+      for (const [p1, p2] of edges) {
+        const hit = this.lineIntersection(from, to, p1, p2);
+        if (hit) {
+          const dist = Math.hypot(hit.x - from.x, hit.y - from.y);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestHit = hit;
+          }
+        }
+      }
+    }
+
+    return closestHit;
+  }
+
+  // Calculate intersection point of two line segments
+  // Returns null if they don't intersect
+  private lineIntersection(p1: Position, p2: Position, p3: Position, p4: Position): Position | null {
+    const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
+    const x3 = p3.x, y3 = p3.y, x4 = p4.x, y4 = p4.y;
+
+    const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if (Math.abs(denom) < 0.0001) return null; // Lines are parallel
+
+    const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+    const u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom;
+
+    // Check if intersection is within both line segments
+    if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+      return {
+        x: x1 + t * (x2 - x1),
+        y: y1 + t * (y2 - y1),
+      };
+    }
+
+    return null;
   }
 
   private drawActionMarkers() {
@@ -440,7 +524,7 @@ export class GameEngine {
         await this.executeShot(tank, sprite, action.targetPosition);
       }
 
-      if (this.checkGameOver()) {
+      if (await this.checkGameOver()) {
         this.isExecuting = false;
         return;
       }
@@ -559,7 +643,12 @@ export class GameEngine {
       const turret = sprite.children.find(c => c.label === 'turret') as PIXI.Container;
       if (!turret) { resolve(); return; }
       
-      const angle = Math.atan2(target.y - tank.position.y, target.x - tank.position.x) + Math.PI / 2 - sprite.rotation;
+      // Check if shot hits an obstacle before reaching target
+      const obstacleHit = this.raycastToObstacle(tank.position, target);
+      const actualTarget = obstacleHit || target;
+      const hitObstacle = obstacleHit !== null;
+      
+      const angle = Math.atan2(actualTarget.y - tank.position.y, actualTarget.x - tank.position.x) + Math.PI / 2 - sprite.rotation;
 
       gsap.to(turret, {
         rotation: angle,
@@ -569,10 +658,13 @@ export class GameEngine {
           if (this.isDestroyed) { resolve(); return; }
           
           this.createMuzzleFlash(tank.position, sprite.rotation + angle);
-          this.animateProjectile(tank.position, target, () => {
+          this.animateProjectile(tank.position, actualTarget, () => {
             if (!this.isDestroyed) {
-              this.checkHit(target);
-              this.createExplosion(target.x, target.y);
+              // Only check for tank hits if we didn't hit an obstacle
+              if (!hitObstacle) {
+                this.checkHit(actualTarget);
+              }
+              this.createExplosion(actualTarget.x, actualTarget.y, hitObstacle ? 'obstacle' : 'normal');
             }
             resolve();
           });
@@ -645,7 +737,7 @@ export class GameEngine {
     if (this.isDestroyed) return;
     const sprite = this.tankSprites.get(tank.id);
     if (sprite) {
-      this.createExplosion(tank.position.x, tank.position.y, true);
+      this.createExplosion(tank.position.x, tank.position.y, 'big');
       gsap.to(sprite, {
         alpha: 0,
         duration: 0.5,
@@ -666,26 +758,47 @@ export class GameEngine {
     gsap.to(flash, { alpha: 0, duration: 0.12, onComplete: () => { if (!this.isDestroyed) this.effectsLayer.removeChild(flash); } });
   }
 
-  private createExplosion(x: number, y: number, big = false) {
+  private createExplosion(x: number, y: number, type: 'normal' | 'big' | 'obstacle' = 'normal') {
     if (this.isDestroyed) return;
-    const count = big ? 30 : 15;
-    const speed = big ? 6 : 3;
+    
+    let count: number, speed: number, colors: number[];
+    
+    if (type === 'big') {
+      // Big explosion for tank destruction
+      count = 30;
+      speed = 6;
+      colors = [0xfbbf24, 0xef4444, 0xff6b00];
+    } else if (type === 'obstacle') {
+      // Debris/sparks for obstacle hits
+      count = 12;
+      speed = 2;
+      colors = [0x8b7355, 0x6b5344, 0xaaa080]; // Brown/gray debris colors
+    } else {
+      // Normal explosion
+      count = 15;
+      speed = 3;
+      colors = [0xfbbf24, 0xef4444, 0xff6b00];
+    }
+    
+    const particleSize = type === 'big' ? 6 : (type === 'obstacle' ? 3 : 4);
     
     for (let i = 0; i < count; i++) {
       const angle = (Math.PI * 2 * i) / count + Math.random() * 0.5;
       const vel = speed * (0.5 + Math.random());
-      const colors = [0xfbbf24, 0xef4444, 0xff6b00];
       this.particles.push({
         x, y,
         vx: Math.cos(angle) * vel,
         vy: Math.sin(angle) * vel,
         life: 1, maxLife: 1,
-        size: big ? 6 : 4,
+        size: particleSize,
         color: colors[Math.floor(Math.random() * colors.length)],
         alpha: 1,
       });
     }
-    this.screenShake(big ? 8 : 3);
+    
+    // Screen shake intensity based on explosion type
+    const shakeIntensity = type === 'big' ? 8 : (type === 'obstacle' ? 2 : 3);
+    this.screenShake(shakeIntensity);
   }
 
   private createDustCloud(x: number, y: number) {
@@ -731,12 +844,19 @@ export class GameEngine {
     });
   }
 
-  private checkGameOver(): boolean {
+  private async checkGameOver(): Promise<boolean> {
     if (this.isDestroyed) return true;
     const alive = this.state.tanks.filter((t) => t.isAlive);
     if (alive.length <= 1) {
-      this.state.phase = 'game-over';
+      // Set the winner but don't show game-over screen yet
       this.state.winner = alive[0]?.name || 'Nobody';
+      
+      // Wait 3 seconds so players can see the destruction
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      if (this.isDestroyed) return true;
+      
+      this.state.phase = 'game-over';
       this.emitState();
       return true;
     }
