@@ -5,9 +5,11 @@ import { Tank, Obstacle, Position, GameState, Particle } from './types';
 // Configuration
 const TANK_SIZE = 40;
 const ACTIONS_PER_TURN = 2;
-const MOVE_DURATION = 2.0; // Slower tank movement (was 0.6)
+const TANK_SPEED = 80; // Pixels per second
+const TANK_ROTATION_SPEED = 3; // Radians per second
 const SHOT_DURATION = 0.3;
 const MAX_MOVE_DISTANCE = 150; // Maximum pixels a tank can move per action
+const MIN_FIRE_DISTANCE = 50; // Minimum pixels from tank to fire target
 
 export class GameEngine {
   private app!: PIXI.Application;
@@ -290,11 +292,17 @@ export class GameEngine {
 
     if (this.isPositionBlocked(target) || !this.isWithinBounds(target)) return;
 
+    const effectivePos = this.getEffectivePosition();
+    const distance = Math.hypot(target.x - effectivePos.x, target.y - effectivePos.y);
+
     // For move actions, check distance limit
     if (this.state.selectedActionType === 'move') {
-      const effectivePos = this.getEffectivePosition();
-      const distance = Math.hypot(target.x - effectivePos.x, target.y - effectivePos.y);
       if (distance > MAX_MOVE_DISTANCE) return; // Out of range
+    }
+
+    // For shoot actions, check minimum distance (prevent self-fire)
+    if (this.state.selectedActionType === 'shoot') {
+      if (distance < MIN_FIRE_DISTANCE) return; // Too close to self
     }
 
     this.state.actionQueue.push({
@@ -358,10 +366,15 @@ export class GameEngine {
       
       // Dashed inner ring for style
       const dashCount = 32;
+      const innerRadius = MAX_MOVE_DISTANCE - 8;
       for (let i = 0; i < dashCount; i += 2) {
         const startAngle = (i / dashCount) * Math.PI * 2;
         const endAngle = ((i + 1) / dashCount) * Math.PI * 2;
-        rangeRing.arc(effectivePos.x, effectivePos.y, MAX_MOVE_DISTANCE - 8, startAngle, endAngle);
+        // Move to start of arc segment to avoid line from origin
+        const startX = effectivePos.x + Math.cos(startAngle) * innerRadius;
+        const startY = effectivePos.y + Math.sin(startAngle) * innerRadius;
+        rangeRing.moveTo(startX, startY);
+        rangeRing.arc(effectivePos.x, effectivePos.y, innerRadius, startAngle, endAngle);
         rangeRing.stroke({ color: 0x22c55e, width: 1, alpha: 0.3 });
       }
       
@@ -448,32 +461,58 @@ export class GameEngine {
     return new Promise((resolve) => {
       if (this.isDestroyed) { resolve(); return; }
 
-      const angle = Math.atan2(target.y - tank.position.y, target.x - tank.position.x) + Math.PI / 2;
-      this.createDustCloud(tank.position.x, tank.position.y);
+      const targetAngle = Math.atan2(target.y - tank.position.y, target.x - tank.position.x) + Math.PI / 2;
+      
+      // Calculate the shortest rotation direction
+      const currentAngle = sprite.rotation;
+      let angleDiff = targetAngle - currentAngle;
+      
+      // Normalize to -PI to PI
+      while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+      while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+      
+      const finalAngle = currentAngle + angleDiff;
+      const rotationDuration = Math.abs(angleDiff) / TANK_ROTATION_SPEED;
+      
+      // Calculate move duration based on distance and speed
+      const distance = Math.hypot(target.x - tank.position.x, target.y - tank.position.y);
+      const moveDuration = distance / TANK_SPEED;
       
       let lastDustTime = 0;
 
+      // Step 1: Rotate to face target
       gsap.to(sprite, {
-        x: target.x,
-        y: target.y,
-        rotation: angle,
-        duration: MOVE_DURATION,
-        ease: 'power2.inOut', // Smoother acceleration/deceleration
-        onUpdate: () => {
-          if (this.isDestroyed) return;
-          
-          // Create dust particles while moving (every ~50ms)
-          const now = Date.now();
-          if (now - lastDustTime > 50) {
-            lastDustTime = now;
-            this.createMovementDust(sprite.x, sprite.y, angle);
-          }
-        },
+        rotation: finalAngle,
+        duration: rotationDuration,
+        ease: 'power2.inOut',
         onComplete: () => {
-          tank.position = { ...target };
-          tank.rotation = angle;
-          if (!this.isDestroyed) this.createDustCloud(target.x, target.y);
-          resolve();
+          if (this.isDestroyed) { resolve(); return; }
+          
+          tank.rotation = finalAngle;
+          this.createDustCloud(tank.position.x, tank.position.y);
+          
+          // Step 2: Move forward to target
+          gsap.to(sprite, {
+            x: target.x,
+            y: target.y,
+            duration: moveDuration,
+            ease: 'power2.inOut',
+            onUpdate: () => {
+              if (this.isDestroyed) return;
+              
+              // Create dust particles while moving (every ~50ms)
+              const now = Date.now();
+              if (now - lastDustTime > 50) {
+                lastDustTime = now;
+                this.createMovementDust(sprite.x, sprite.y, finalAngle);
+              }
+            },
+            onComplete: () => {
+              tank.position = { ...target };
+              if (!this.isDestroyed) this.createDustCloud(target.x, target.y);
+              resolve();
+            },
+          });
         },
       });
     });
