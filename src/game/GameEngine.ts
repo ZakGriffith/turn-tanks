@@ -7,8 +7,9 @@ const TANK_SIZE = 40;
 const ACTIONS_PER_TURN = 2;
 const TANK_SPEED = 80; // Pixels per second
 const TANK_ROTATION_SPEED = 3; // Radians per second
-const SHOT_DURATION = 0.3;
+const SHELL_SPEED = 1000; // Pixels per second
 const MAX_MOVE_DISTANCE = 150; // Maximum pixels a tank can move per action
+const BARREL_LENGTH = 20; // How far the barrel extends from tank center
 const MIN_FIRE_DISTANCE = 50; // Minimum pixels from tank to fire target
 
 export class GameEngine {
@@ -23,6 +24,7 @@ export class GameEngine {
   private tankSprites: Map<string, PIXI.Container> = new Map();
   private particles: Particle[] = [];
   private particleGraphics!: PIXI.Graphics;
+  private damageSmokeIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
   
   private state: GameState;
   private onStateChange: (state: GameState) => void;
@@ -290,20 +292,21 @@ export class GameEngine {
     const pos = event.global;
     const target = { x: pos.x, y: pos.y };
 
-    if (this.isPositionBlocked(target) || !this.isWithinBounds(target)) return;
-
     const effectivePos = this.getEffectivePosition();
     const distance = Math.hypot(target.x - effectivePos.x, target.y - effectivePos.y);
 
-    // For move actions, check distance limit and path clearance
+    // For move actions, check bounds (tank-sized padding), distance limit, position blocked, and path clearance
     if (this.state.selectedActionType === 'move') {
+      if (!this.isWithinBounds(target, TANK_SIZE)) return; // Stay away from edges
       if (distance > MAX_MOVE_DISTANCE) return; // Out of range
+      if (this.isPositionBlocked(target)) return; // Can't end on obstacle
       if (!this.isPathClear(effectivePos, target)) return; // Path blocked by obstacle
     }
 
-    // For shoot actions, check minimum distance (prevent self-fire)
-    // Note: Shots CAN go through to obstacles - they'll hit the obstacle instead of the target
+    // For shoot actions, only check basic bounds (small padding) and minimum distance
+    // Fire targets can be placed anywhere - the shot will hit obstacles if in the way
     if (this.state.selectedActionType === 'shoot') {
+      if (!this.isWithinBounds(target, 5)) return; // Just need to be on the map
       if (distance < MIN_FIRE_DISTANCE) return; // Too close to self
     }
 
@@ -339,8 +342,7 @@ export class GameEngine {
     );
   }
 
-  private isWithinBounds(pos: Position): boolean {
-    const pad = TANK_SIZE;
+  private isWithinBounds(pos: Position, pad: number = TANK_SIZE): boolean {
     return pos.x > pad && pos.x < this.width - pad && pos.y > pad && pos.y < this.height - pad;
   }
 
@@ -643,22 +645,39 @@ export class GameEngine {
       const turret = sprite.children.find(c => c.label === 'turret') as PIXI.Container;
       if (!turret) { resolve(); return; }
       
-      // Check if shot hits an obstacle before reaching target
-      const obstacleHit = this.raycastToObstacle(tank.position, target);
+      // Calculate the world angle to the target
+      const worldAngleToTarget = Math.atan2(target.y - tank.position.y, target.x - tank.position.x);
+      
+      // Calculate barrel tip position (for raycast and muzzle flash)
+      const barrelTip = {
+        x: tank.position.x + Math.cos(worldAngleToTarget) * BARREL_LENGTH,
+        y: tank.position.y + Math.sin(worldAngleToTarget) * BARREL_LENGTH,
+      };
+      
+      // Check if shot hits an obstacle (from barrel tip to target)
+      const obstacleHit = this.raycastToObstacle(barrelTip, target);
       const actualTarget = obstacleHit || target;
       const hitObstacle = obstacleHit !== null;
       
-      const angle = Math.atan2(actualTarget.y - tank.position.y, actualTarget.x - tank.position.x) + Math.PI / 2 - sprite.rotation;
+      // Calculate turret rotation relative to tank body
+      const turretAngle = worldAngleToTarget + Math.PI / 2 - sprite.rotation;
 
       gsap.to(turret, {
-        rotation: angle,
+        rotation: turretAngle,
         duration: 0.2,
         ease: 'power2.out',
         onComplete: () => {
           if (this.isDestroyed) { resolve(); return; }
           
-          this.createMuzzleFlash(tank.position, sprite.rotation + angle);
-          this.animateProjectile(tank.position, actualTarget, () => {
+          // Calculate final barrel tip position after turret rotation
+          const finalWorldAngle = sprite.rotation + turret.rotation - Math.PI / 2;
+          const finalBarrelTip = {
+            x: tank.position.x + Math.cos(finalWorldAngle) * BARREL_LENGTH,
+            y: tank.position.y + Math.sin(finalWorldAngle) * BARREL_LENGTH,
+          };
+          
+          this.createMuzzleFlash(finalBarrelTip);
+          this.animateProjectile(finalBarrelTip, actualTarget, () => {
             if (!this.isDestroyed) {
               // Only check for tank hits if we didn't hit an obstacle
               if (!hitObstacle) {
@@ -676,6 +695,10 @@ export class GameEngine {
   private animateProjectile(from: Position, to: Position, onComplete: () => void) {
     if (this.isDestroyed) { onComplete(); return; }
 
+    // Calculate duration based on distance and constant speed
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    const duration = distance / SHELL_SPEED;
+
     const proj = new PIXI.Graphics();
     proj.circle(0, 0, 6);
     proj.fill({ color: 0xfbbf24, alpha: 0.7 });
@@ -690,7 +713,7 @@ export class GameEngine {
     gsap.to(proj, {
       x: to.x,
       y: to.y,
-      duration: SHOT_DURATION,
+      duration: duration,
       ease: 'none',
       onUpdate: () => {
         if (this.isDestroyed) return;
@@ -727,7 +750,11 @@ export class GameEngine {
 
         if (tank.health <= 0) {
           tank.isAlive = false;
+          this.stopDamageSmoke(tank.id); // Stop damage smoke before destruction fire
           this.destroyTank(tank);
+        } else {
+          // Update damage smoke based on health percentage
+          this.updateDamageSmoke(tank);
         }
       }
     });
@@ -736,24 +763,195 @@ export class GameEngine {
   private destroyTank(tank: Tank) {
     if (this.isDestroyed) return;
     const sprite = this.tankSprites.get(tank.id);
-    if (sprite) {
-      this.createExplosion(tank.position.x, tank.position.y, 'big');
-      gsap.to(sprite, {
+    if (!sprite) return;
+
+    // Big initial explosion
+    this.createExplosion(tank.position.x, tank.position.y, 'big');
+    
+    // Find and detach the turret
+    const turret = sprite.children.find(c => c.label === 'turret') as PIXI.Container;
+    if (turret) {
+      // Move turret to effects layer so it can fly independently
+      const globalPos = sprite.toGlobal(turret.position);
+      sprite.removeChild(turret);
+      turret.position.set(globalPos.x, globalPos.y);
+      turret.rotation = sprite.rotation + turret.rotation;
+      this.effectsLayer.addChild(turret);
+      
+      // Random direction for turret to fly
+      const flyAngle = Math.random() * Math.PI * 2;
+      const flyDistance = 80 + Math.random() * 60;
+      const targetX = globalPos.x + Math.cos(flyAngle) * flyDistance;
+      const targetY = globalPos.y + Math.sin(flyAngle) * flyDistance;
+      
+      // Animate turret flying off and spinning
+      gsap.to(turret, {
+        x: targetX,
+        y: targetY,
+        rotation: turret.rotation + (Math.random() > 0.5 ? 1 : -1) * Math.PI * 4,
         alpha: 0,
-        duration: 0.5,
-        onComplete: () => { if (!this.isDestroyed) this.tankLayer.removeChild(sprite); },
+        duration: 1.5,
+        ease: 'power2.out',
+        onComplete: () => {
+          if (!this.isDestroyed) this.effectsLayer.removeChild(turret);
+        },
       });
+    }
+
+    // Hide health bars
+    const healthBg = sprite.children.find(c => c.label === 'healthBg');
+    const healthBar = sprite.children.find(c => c.label === 'healthBar');
+    if (healthBg) healthBg.visible = false;
+    if (healthBar) healthBar.visible = false;
+
+    // Darken the tank body (make it look burnt)
+    gsap.to(sprite, {
+      alpha: 0.6,
+      duration: 0.3,
+    });
+
+    // Start the fire effect (continuous burning)
+    this.startTankFire(tank.position.x, tank.position.y);
+  }
+
+  private startTankFire(x: number, y: number) {
+    if (this.isDestroyed) return;
+    
+    let fireTime = 0;
+    const fireDuration = 4000; // 4 seconds of intense fire
+    const fireInterval = 30; // Add particles more frequently
+    
+    const fireLoop = () => {
+      if (this.isDestroyed || fireTime >= fireDuration) return;
+      
+      fireTime += fireInterval;
+      const intensity = 1 - (fireTime / fireDuration) * 0.7; // Don't fade as much
+      
+      // LOTS of fire particles (orange/yellow/red, going up)
+      for (let i = 0; i < 5; i++) {
+        const fireColors = [0xff2200, 0xff4400, 0xff6600, 0xff8800, 0xffaa00, 0xffcc00];
+        this.particles.push({
+          x: x + (Math.random() - 0.5) * 35,
+          y: y + (Math.random() - 0.5) * 25,
+          vx: (Math.random() - 0.5) * 2,
+          vy: -2 - Math.random() * 4, // Go upward faster
+          life: 0.8 + Math.random() * 0.5,
+          maxLife: 1.3,
+          size: 4 + Math.random() * 6 * intensity,
+          color: fireColors[Math.floor(Math.random() * fireColors.length)],
+          alpha: 0.85 * intensity,
+        });
+      }
+      
+      // LOTS of smoke particles (dark gray/black, billowing up)
+      for (let i = 0; i < 3; i++) {
+        this.particles.push({
+          x: x + (Math.random() - 0.5) * 40,
+          y: y + (Math.random() - 0.5) * 20,
+          vx: (Math.random() - 0.5) * 1.5,
+          vy: -1 - Math.random() * 2,
+          life: 1.5,
+          maxLife: 1.5,
+          size: 6 + Math.random() * 8,
+          color: Math.random() > 0.5 ? 0x222222 : 0x444444,
+          alpha: 0.6 * intensity,
+        });
+      }
+      
+      // Occasional ember sparks
+      if (Math.random() > 0.7) {
+        this.particles.push({
+          x: x + (Math.random() - 0.5) * 20,
+          y: y,
+          vx: (Math.random() - 0.5) * 4,
+          vy: -4 - Math.random() * 3,
+          life: 0.6,
+          maxLife: 0.6,
+          size: 2 + Math.random() * 2,
+          color: 0xffff00,
+          alpha: 1,
+        });
+      }
+      
+      setTimeout(fireLoop, fireInterval);
+    };
+    
+    fireLoop();
+  }
+
+  private updateDamageSmoke(tank: Tank) {
+    if (this.isDestroyed) return;
+    
+    const healthPercent = tank.health / tank.maxHealth;
+    
+    // Clear existing smoke interval for this tank
+    this.stopDamageSmoke(tank.id);
+    
+    // No smoke if health is above 50%
+    if (healthPercent > 0.5) return;
+    
+    // Determine smoke intensity based on health
+    const isHeavyDamage = healthPercent <= 0.25;
+    const smokeInterval = isHeavyDamage ? 80 : 150; // More frequent smoke when heavily damaged
+    const smokeCount = isHeavyDamage ? 2 : 1;
+    
+    const interval = setInterval(() => {
+      if (this.isDestroyed || !tank.isAlive) {
+        this.stopDamageSmoke(tank.id);
+        return;
+      }
+      
+      for (let i = 0; i < smokeCount; i++) {
+        // Dark smoke rising from damaged tank
+        this.particles.push({
+          x: tank.position.x + (Math.random() - 0.5) * 20,
+          y: tank.position.y + (Math.random() - 0.5) * 15,
+          vx: (Math.random() - 0.5) * 0.8,
+          vy: -0.8 - Math.random() * 1.2,
+          life: 1.2,
+          maxLife: 1.2,
+          size: 3 + Math.random() * 4,
+          color: isHeavyDamage ? 0x222222 : 0x555555,
+          alpha: isHeavyDamage ? 0.5 : 0.3,
+        });
+      }
+      
+      // Occasional small flame when heavily damaged
+      if (isHeavyDamage && Math.random() > 0.6) {
+        this.particles.push({
+          x: tank.position.x + (Math.random() - 0.5) * 15,
+          y: tank.position.y + (Math.random() - 0.5) * 10,
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: -1 - Math.random() * 1.5,
+          life: 0.5,
+          maxLife: 0.5,
+          size: 2 + Math.random() * 3,
+          color: Math.random() > 0.5 ? 0xff6600 : 0xff4400,
+          alpha: 0.6,
+        });
+      }
+    }, smokeInterval);
+    
+    this.damageSmokeIntervals.set(tank.id, interval);
+  }
+
+  private stopDamageSmoke(tankId: string) {
+    const interval = this.damageSmokeIntervals.get(tankId);
+    if (interval) {
+      clearInterval(interval);
+      this.damageSmokeIntervals.delete(tankId);
     }
   }
 
-  private createMuzzleFlash(pos: Position, angle: number) {
+  private createMuzzleFlash(barrelTip: Position) {
     if (this.isDestroyed) return;
     const flash = new PIXI.Graphics();
     flash.circle(0, 0, 12);
     flash.fill({ color: 0xffffff, alpha: 0.9 });
     flash.circle(0, 0, 8);
     flash.fill(0xfbbf24);
-    flash.position.set(pos.x + Math.sin(angle) * 25, pos.y - Math.cos(angle) * 25);
+    // Position flash at the barrel tip
+    flash.position.set(barrelTip.x, barrelTip.y);
     this.effectsLayer.addChild(flash);
     gsap.to(flash, { alpha: 0, duration: 0.12, onComplete: () => { if (!this.isDestroyed) this.effectsLayer.removeChild(flash); } });
   }
@@ -885,6 +1083,10 @@ export class GameEngine {
   public resetGame() {
     if (this.isDestroyed) return;
     
+    // Clear all damage smoke intervals
+    this.damageSmokeIntervals.forEach((interval) => clearInterval(interval));
+    this.damageSmokeIntervals.clear();
+    
     this.tankSprites.forEach((sprite) => this.tankLayer.removeChild(sprite));
     this.tankSprites.clear();
     this.uiLayer.removeChildren();
@@ -908,6 +1110,11 @@ export class GameEngine {
 
   public destroy() {
     this.isDestroyed = true;
+    
+    // Clear all damage smoke intervals
+    this.damageSmokeIntervals.forEach((interval) => clearInterval(interval));
+    this.damageSmokeIntervals.clear();
+    
     gsap.killTweensOf(this.gameContainer);
     this.tankSprites.forEach((sprite) => gsap.killTweensOf(sprite));
     
