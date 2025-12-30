@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Rajdhani:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Rajdhani:wght@300;400;500;600;700&display=swap');
 
 *,
 *::before,
@@ -7,27 +7,12 @@
 }
 
 :root {
-  /* Colors */
-  --color-bg-primary: #0a0a0f;
-  --color-bg-secondary: #12121a;
-  --color-text-primary: #f0f0f0;
-  --color-text-secondary: #a0a0a0;
-  --color-accent-gold: #fbbf24;
-  --color-accent-blue: #3b82f6;
-  --color-accent-red: #ef4444;
-  --color-accent-green: #22c55e;
-  
-  /* Typography */
   font-family: 'Rajdhani', system-ui, sans-serif;
   line-height: 1.5;
   font-weight: 500;
-
-  /* Theme */
   color-scheme: dark;
-  color: var(--color-text-primary);
-  background-color: var(--color-bg-primary);
-
-  /* Rendering */
+  color: #f0f0f0;
+  background-color: #0a0a12;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -42,36 +27,23 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background: 
-    radial-gradient(ellipse at top, #1a1a2e 0%, transparent 50%),
-    radial-gradient(ellipse at bottom, #16213e 0%, transparent 50%),
-    var(--color-bg-primary);
-}
-
-h1, h2, h3, h4, h5, h6 {
-  font-family: 'Orbitron', sans-serif;
-  font-weight: 800;
 }
 
 #root {
   width: 100%;
 }
 
-/* Touch optimization */
-button, 
-[role="button"] {
+button {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Focus styles for accessibility */
 :focus-visible {
-  outline: 2px solid var(--color-accent-gold);
+  outline: 2px solid #fbbf24;
   outline-offset: 2px;
 }
 
-/* Selection */
 ::selection {
-  background: var(--color-accent-gold);
-  color: var(--color-bg-primary);
+  background: #fbbf24;
+  color: #0a0a12;
 }

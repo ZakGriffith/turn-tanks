@@ -1,8 +1,8 @@
-import { Game } from './components/Game';
+import { PixiGame } from './components/PixiGame';
 import './App.css';
 
 function App() {
-  return <Game />;
+  return <PixiGame />;
 }
 
 export default App;
