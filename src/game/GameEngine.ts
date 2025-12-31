@@ -634,6 +634,9 @@ export class GameEngine {
     return new Promise((resolve) => {
       if (this.isDestroyed) { resolve(); return; }
 
+      const turret = sprite.children.find(c => c.label === 'turret');
+      if (!turret) { resolve(); return; }
+
       const targetAngle = Math.atan2(target.y - tank.position.y, target.x - tank.position.x) + Math.PI / 2;
       
       // Calculate the shortest rotation direction
@@ -653,12 +656,22 @@ export class GameEngine {
       
       let lastDustTime = 0;
 
-      // Step 1: Rotate to face target
-      gsap.to(sprite, {
-        rotation: finalAngle,
-        duration: rotationDuration,
-        ease: 'power2.inOut',
-        onComplete: () => {
+      // Calculate turret rotation to forward position
+      const currentTurretRotation = turret.rotation;
+      let turretAngleDiff = 0 - currentTurretRotation;
+      
+      // Normalize turret rotation to shortest path
+      while (turretAngleDiff > Math.PI) turretAngleDiff -= Math.PI * 2;
+      while (turretAngleDiff < -Math.PI) turretAngleDiff += Math.PI * 2;
+      
+      const turretRotationDuration = Math.abs(turretAngleDiff) / TURRET_ROTATION_SPEED;
+      
+      // Track which animation finishes last
+      let turretComplete = false;
+      let tankRotationComplete = false;
+      
+      const checkBothComplete = () => {
+        if (turretComplete && tankRotationComplete) {
           if (this.isDestroyed) { resolve(); return; }
           
           tank.rotation = finalAngle;
@@ -686,6 +699,27 @@ export class GameEngine {
               resolve();
             },
           });
+        }
+      };
+
+      // Step 1: Rotate turret to front AND rotate tank to face target (simultaneously)
+      gsap.to(turret, {
+        rotation: currentTurretRotation + turretAngleDiff,
+        duration: turretRotationDuration,
+        ease: 'power2.inOut',
+        onComplete: () => {
+          turretComplete = true;
+          checkBothComplete();
+        },
+      });
+
+      gsap.to(sprite, {
+        rotation: finalAngle,
+        duration: rotationDuration,
+        ease: 'power2.inOut',
+        onComplete: () => {
+          tankRotationComplete = true;
+          checkBothComplete();
         },
       });
     });
