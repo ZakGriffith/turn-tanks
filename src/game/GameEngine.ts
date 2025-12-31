@@ -1206,7 +1206,12 @@ export class GameEngine {
       // Set the winner but don't show game-over screen yet
       this.state.winner = alive[0]?.name || 'Nobody';
       
-      // Wait so players can see the destruction
+      // Victory dance for the winning tank
+      if (alive.length === 1) {
+        this.victoryDance(alive[0]);
+      }
+      
+      // Wait so players can see the destruction and victory dance
       await new Promise(resolve => setTimeout(resolve, GAME_OVER_DELAY));
       
       if (this.isDestroyed) return true;
@@ -1216,6 +1221,30 @@ export class GameEngine {
       return true;
     }
     return false;
+  }
+
+  private victoryDance(tank: Tank) {
+    if (this.isDestroyed) return;
+    
+    const sprite = this.tankSprites.get(tank.id);
+    if (!sprite) return;
+    
+    const turret = sprite.children.find(c => c.label === 'turret');
+    if (!turret) return;
+    
+    // Rotate tank body clockwise continuously
+    gsap.to(sprite, {
+      rotation: sprite.rotation + Math.PI * 4, // 2 full rotations
+      duration: GAME_OVER_DELAY / 1000,
+      ease: 'none',
+    });
+    
+    // Rotate turret counter-clockwise continuously
+    gsap.to(turret, {
+      rotation: turret.rotation - Math.PI * 4, // 2 full rotations in opposite direction
+      duration: GAME_OVER_DELAY / 1000,
+      ease: 'none',
+    });
   }
 
   private nextPlayer() {
