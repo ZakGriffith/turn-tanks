@@ -19,6 +19,7 @@ export class GameEngine {
   private gameContainer!: PIXI.Container;
   private terrainLayer!: PIXI.Container;
   private obstacleLayer!: PIXI.Container;
+  private waypointLayer!: PIXI.Container;
   private tankLayer!: PIXI.Container;
   private effectsLayer!: PIXI.Container;
   private uiLayer!: PIXI.Container;
@@ -84,14 +85,16 @@ export class GameEngine {
     this.gameContainer = new PIXI.Container();
     this.terrainLayer = new PIXI.Container();
     this.obstacleLayer = new PIXI.Container();
+    this.waypointLayer = new PIXI.Container();
     this.tankLayer = new PIXI.Container();
     this.effectsLayer = new PIXI.Container();
     this.uiLayer = new PIXI.Container();
     this.particleGraphics = new PIXI.Graphics();
 
-    // Layer hierarchy
+    // Layer hierarchy (bottom to top)
     this.gameContainer.addChild(this.terrainLayer);
     this.gameContainer.addChild(this.obstacleLayer);
+    this.gameContainer.addChild(this.waypointLayer); // Waypoints below tanks
     this.gameContainer.addChild(this.tankLayer);
     this.gameContainer.addChild(this.effectsLayer);
     this.gameContainer.addChild(this.uiLayer);
@@ -450,6 +453,7 @@ export class GameEngine {
 
   private drawActionMarkers() {
     this.uiLayer.removeChildren();
+    this.waypointLayer.removeChildren(); // Clear waypoint layer
     const tank = this.state.tanks[this.state.currentPlayerIndex];
     let lastPos = tank.position;
 
@@ -496,7 +500,7 @@ export class GameEngine {
         line.moveTo(lastPos.x, lastPos.y);
         line.lineTo(action.targetPosition.x, action.targetPosition.y);
         line.stroke({ color: 0xfbbf24, width: 2, alpha: 0.6 });
-        this.uiLayer.addChild(line);
+        this.waypointLayer.addChild(line); // Draw lines below tanks
         lastPos = action.targetPosition;
       }
 
@@ -504,22 +508,28 @@ export class GameEngine {
       const color = action.type === 'move' ? 0x22c55e : 0xef4444;
       
       if (action.type === 'move') {
-        // Move marker: larger with fill
+        // Move marker: larger with fill - drawn on waypoint layer (below tanks)
         marker.circle(0, 0, 14);
         marker.stroke({ color, width: 3 });
         marker.circle(0, 0, 10);
         marker.fill({ color, alpha: 0.3 });
+        
+        const text = new PIXI.Text({ text: String(i + 1), style: { fontSize: 12, fontWeight: 'bold', fill: 0xffffff } });
+        text.anchor.set(0.5);
+        marker.addChild(text);
+        marker.position.set(action.targetPosition.x, action.targetPosition.y);
+        this.waypointLayer.addChild(marker); // Draw move markers below tanks
       } else {
-        // Fire marker: smaller ring, no fill
+        // Fire marker: smaller ring, no fill - drawn on UI layer (above tanks)
         marker.circle(0, 0, 10);
         marker.stroke({ color, width: 2, alpha: 0.5 });
+        
+        const text = new PIXI.Text({ text: String(i + 1), style: { fontSize: 12, fontWeight: 'bold', fill: 0xffffff } });
+        text.anchor.set(0.5);
+        marker.addChild(text);
+        marker.position.set(action.targetPosition.x, action.targetPosition.y);
+        this.uiLayer.addChild(marker); // Draw fire markers above tanks
       }
-      
-      const text = new PIXI.Text({ text: String(i + 1), style: { fontSize: 12, fontWeight: 'bold', fill: 0xffffff } });
-      text.anchor.set(0.5);
-      marker.addChild(text);
-      marker.position.set(action.targetPosition.x, action.targetPosition.y);
-      this.uiLayer.addChild(marker);
     });
   }
 
@@ -648,6 +658,7 @@ export class GameEngine {
     if (this.isDestroyed) return;
 
     this.uiLayer.removeChildren();
+    this.waypointLayer.removeChildren(); // Clear waypoints after execution
     this.state.actionQueue = [];
     this.nextPlayer();
     
@@ -1260,9 +1271,9 @@ export class GameEngine {
 
   private highlightCurrentTank() {
     if (this.isDestroyed) return;
-    this.state.tanks.forEach((tank, i) => {
+    this.state.tanks.forEach((tank) => {
       const sprite = this.tankSprites.get(tank.id);
-      if (sprite) sprite.alpha = i === this.state.currentPlayerIndex ? 1 : 0.7;
+      if (sprite) sprite.alpha = 1; // Keep all tanks fully opaque
     });
   }
 
@@ -1276,6 +1287,7 @@ export class GameEngine {
     this.tankSprites.forEach((sprite) => this.tankLayer.removeChild(sprite));
     this.tankSprites.clear();
     this.uiLayer.removeChildren();
+    this.waypointLayer.removeChildren(); // Clear waypoints on reset
     this.particles = [];
     
     this.state = this.createInitialState(this.width, this.height);
