@@ -486,10 +486,18 @@ export class GameEngine {
 
       const marker = new PIXI.Graphics();
       const color = action.type === 'move' ? 0x22c55e : 0xef4444;
-      marker.circle(0, 0, 14);
-      marker.stroke({ color, width: 3 });
-      marker.circle(0, 0, 10);
-      marker.fill({ color, alpha: 0.3 });
+      
+      if (action.type === 'move') {
+        // Move marker: larger with fill
+        marker.circle(0, 0, 14);
+        marker.stroke({ color, width: 3 });
+        marker.circle(0, 0, 10);
+        marker.fill({ color, alpha: 0.3 });
+      } else {
+        // Fire marker: smaller ring, no fill
+        marker.circle(0, 0, 10);
+        marker.stroke({ color, width: 2, alpha: 0.5 });
+      }
       
       const text = new PIXI.Text({ text: String(i + 1), style: { fontSize: 12, fontWeight: 'bold', fill: 0xffffff } });
       text.anchor.set(0.5);
