@@ -301,10 +301,12 @@ export class GameEngine {
 
     // For move actions, check bounds (tank-sized padding), distance limit, position blocked, and path clearance
     if (this.state.selectedActionType === 'move') {
+      const currentTank = this.state.tanks[this.state.currentPlayerIndex];
       if (!this.isWithinBounds(target, TANK_SIZE)) return; // Stay away from edges
       if (distance > MAX_MOVE_DISTANCE) return; // Out of range
       if (this.isPositionBlocked(target)) return; // Can't end on obstacle
-      if (!this.isPathClear(effectivePos, target)) return; // Path blocked by obstacle
+      if (this.isPositionBlockedByTank(target, currentTank.id)) return; // Can't end on another tank
+      if (!this.isPathClear(effectivePos, target, currentTank.id)) return; // Path blocked by obstacle or tank
     }
 
     // For shoot actions, only check basic bounds (small padding) and minimum distance
@@ -346,13 +348,22 @@ export class GameEngine {
     );
   }
 
+  private isPositionBlockedByTank(pos: Position, excludeTankId: string): boolean {
+    return this.state.tanks.some((tank) =>
+      tank.id !== excludeTankId &&
+      tank.health > 0 &&
+      Math.abs(pos.x - tank.position.x) < TANK_SIZE &&
+      Math.abs(pos.y - tank.position.y) < TANK_SIZE
+    );
+  }
+
   private isWithinBounds(pos: Position, pad: number = TANK_SIZE): boolean {
     return pos.x > pad && pos.x < this.width - pad && pos.y > pad && pos.y < this.height - pad;
   }
 
-  // Check if a tank can move from 'from' to 'to' without passing through obstacles
+  // Check if a tank can move from 'from' to 'to' without passing through obstacles or other tanks
   // Samples the path and checks the tank's bounding box at each sample point
-  private isPathClear(from: Position, to: Position): boolean {
+  private isPathClear(from: Position, to: Position, excludeTankId?: string): boolean {
     const distance = Math.hypot(to.x - from.x, to.y - from.y);
     // Sample every 10 pixels along the path
     const samples = Math.max(Math.ceil(distance / 10), 1);
@@ -366,6 +377,11 @@ export class GameEngine {
       
       // Check if tank bounding box at this position overlaps any obstacle
       if (this.isPositionBlocked(samplePos)) {
+        return false;
+      }
+      
+      // Check if tank bounding box at this position overlaps any other tank
+      if (excludeTankId && this.isPositionBlockedByTank(samplePos, excludeTankId)) {
         return false;
       }
     }
@@ -509,6 +525,7 @@ export class GameEngine {
 
   private drawBlockedZones(effectivePos: Position) {
     const blockedGraphics = new PIXI.Graphics();
+    const currentTank = this.state.tanks[this.state.currentPlayerIndex];
     
     // Sample points around the range ring to find where movement becomes blocked
     const angleCount = 72; // Check every 5 degrees
@@ -531,7 +548,8 @@ export class GameEngine {
         
         const canMove = this.isWithinBounds(target, TANK_SIZE) && 
                         !this.isPositionBlocked(target) && 
-                        this.isPathClear(effectivePos, target);
+                        !this.isPositionBlockedByTank(target, currentTank.id) &&
+                        this.isPathClear(effectivePos, target, currentTank.id);
         
         if (canMove) {
           maxValidDist = dist;

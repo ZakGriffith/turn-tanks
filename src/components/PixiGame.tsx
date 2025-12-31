@@ -72,8 +72,7 @@ export function PixiGame() {
   return (
     <div className="pixi-game">
       <header className="pixi-game__header">
-        <h1 className="pixi-game__title">TURN TANKS</h1>
-        <p className="pixi-game__subtitle">Tactical Tank Combat</p>
+        <p className="pixi-game__subtitle">TURN TANKS</p>
       </header>
 
       <div className="pixi-game__container" ref={containerRef}>
