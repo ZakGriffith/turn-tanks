@@ -1,16 +1,18 @@
 import * as PIXI from 'pixi.js';
 import gsap from 'gsap';
 import { Tank, Obstacle, Position, GameState, Particle } from './types';
-
-// Configuration
-const TANK_SIZE = 40;
-const ACTIONS_PER_TURN = 2;
-const TANK_SPEED = 80; // Pixels per second
-const TANK_ROTATION_SPEED = 3; // Radians per second
-const SHELL_SPEED = 1000; // Pixels per second
-const MAX_MOVE_DISTANCE = 150; // Maximum pixels a tank can move per action
-const BARREL_LENGTH = 20; // How far the barrel extends from tank center
-const MIN_FIRE_DISTANCE = 50; // Minimum pixels from tank to fire target
+import {
+  TANK_SIZE,
+  ACTIONS_PER_TURN,
+  TANK_SPEED,
+  TANK_ROTATION_SPEED,
+  TURRET_ROTATION_SPEED,
+  SHELL_SPEED,
+  MAX_MOVE_DISTANCE,
+  BARREL_LENGTH,
+  MIN_FIRE_DISTANCE,
+  GAME_OVER_DELAY,
+} from './config';
 
 export class GameEngine {
   private app!: PIXI.Application;
@@ -746,10 +748,20 @@ export class GameEngine {
       
       // Calculate turret rotation relative to tank body
       const turretAngle = worldAngleToTarget + Math.PI / 2 - sprite.rotation;
+      
+      // Calculate the shortest angular distance
+      const currentRotation = turret.rotation;
+      let angleDiff = turretAngle - currentRotation;
+      // Normalize to [-PI, PI] for shortest rotation
+      while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+      while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+      
+      // Calculate duration based on rotation speed
+      const rotationDuration = Math.abs(angleDiff) / TURRET_ROTATION_SPEED;
 
       gsap.to(turret, {
-        rotation: turretAngle,
-        duration: 0.2,
+        rotation: currentRotation + angleDiff, // Use the shortest path
+        duration: rotationDuration,
         ease: 'power2.out',
         onComplete: () => {
           if (this.isDestroyed) { resolve(); return; }
@@ -1134,8 +1146,8 @@ export class GameEngine {
       // Set the winner but don't show game-over screen yet
       this.state.winner = alive[0]?.name || 'Nobody';
       
-      // Wait 3 seconds so players can see the destruction
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Wait so players can see the destruction
+      await new Promise(resolve => setTimeout(resolve, GAME_OVER_DELAY));
       
       if (this.isDestroyed) return true;
       
