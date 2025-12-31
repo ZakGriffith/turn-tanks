@@ -1265,6 +1265,7 @@ export class GameEngine {
       next = (next + 1) % this.state.tanks.length;
     }
     this.state.currentPlayerIndex = next;
+    this.state.selectedActionType = 'move'; // Default to move at start of turn
     this.highlightCurrentTank();
     this.drawActionMarkers(); // Show range ring for new player
   }
