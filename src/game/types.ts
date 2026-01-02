@@ -32,6 +32,9 @@ export interface QueuedAction {
   id: string;
   type: ActionType;
   targetPosition: Position;
+  // For shots: the actual target after accuracy deviation (calculated when queued)
+  // This ensures both host and guest see the same shot result
+  resolvedTarget?: Position;
 }
 
 export type GamePhase = 'planning' | 'executing' | 'game-over';

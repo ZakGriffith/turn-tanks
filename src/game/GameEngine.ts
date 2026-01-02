@@ -1,6 +1,6 @@
 import * as PIXI from 'pixi.js';
 import gsap from 'gsap';
-import { Tank, Obstacle, Position, GameState, Particle } from './types';
+import { Tank, Obstacle, Position, GameState, Particle, QueuedAction } from './types';
 import {
   TANK_SIZE,
   ACTIONS_PER_TURN,
@@ -316,15 +316,15 @@ export class GameEngine {
       
       // Shadow
       g.roundRect(3, 3, obs.width, obs.height, 4);
-      g.fill({ color: 0x000000, alpha: 0.4 });
+      g.fill({ color: 0x000000, alpha: 0.5 });
       
-      // Main body
+      // Main body - dark neutral gray
       g.roundRect(0, 0, obs.width, obs.height, 4);
-      g.fill(0x4a3f35);
+      g.fill(0x2a2a2a);
       
-      // Top highlight
-      g.roundRect(2, 2, obs.width - 4, 6, 2);
-      g.fill({ color: 0x6a5f55, alpha: 0.5 });
+      // Top highlight - subtle lighter edge
+      g.roundRect(2, 2, obs.width - 4, 4, 2);
+      g.fill({ color: 0x444444, alpha: 0.6 });
 
       g.position.set(obs.position.x - obs.width / 2, obs.position.y - obs.height / 2);
       this.obstacleLayer.addChild(g);
@@ -431,7 +431,7 @@ export class GameEngine {
     // For move actions, check bounds (tank-sized padding), distance limit, position blocked, and path clearance
     if (this.state.selectedActionType === 'move') {
       const currentTank = this.state.tanks[this.state.currentPlayerIndex];
-      if (!this.isWithinBounds(target, TANK_SIZE)) return; // Stay away from edges
+      if (!this.isWithinBounds(target, TANK_SIZE / 2)) return; // Stay away from edges
       if (distance > MAX_MOVE_DISTANCE) return; // Out of range
       if (this.isPositionBlocked(target)) return; // Can't end on obstacle
       if (this.isPositionBlockedByTank(target, currentTank.id)) return; // Can't end on another tank
@@ -445,11 +445,19 @@ export class GameEngine {
       if (distance < MIN_FIRE_DISTANCE) return; // Too close to self
     }
 
-    this.state.actionQueue.push({
+    const tank = this.state.tanks[this.state.currentPlayerIndex];
+    const action: QueuedAction = {
       id: Math.random().toString(36).substring(7),
       type: this.state.selectedActionType,
       targetPosition: target,
-    });
+    };
+    
+    // For shots, pre-calculate the accuracy deviation so both host and guest see same result
+    if (action.type === 'shoot') {
+      action.resolvedTarget = this.applyAccuracyDeviation(tank, effectivePos, target);
+    }
+    
+    this.state.actionQueue.push(action);
     
     // Play action queue sound
     SoundManager.play('actionQueue');
@@ -489,7 +497,7 @@ export class GameEngine {
     );
   }
 
-  private isWithinBounds(pos: Position, pad: number = TANK_SIZE): boolean {
+  private isWithinBounds(pos: Position, pad: number = TANK_SIZE / 2): boolean {
     return pos.x > pad && pos.x < this.width - pad && pos.y > pad && pos.y < this.height - pad;
   }
 
@@ -609,7 +617,6 @@ export class GameEngine {
       for (let i = 0; i < dashCount; i += 2) {
         const startAngle = (i / dashCount) * Math.PI * 2;
         const endAngle = ((i + 1) / dashCount) * Math.PI * 2;
-        // Move to start of arc segment to avoid line from origin
         const startX = effectivePos.x + Math.cos(startAngle) * innerRadius;
         const startY = effectivePos.y + Math.sin(startAngle) * innerRadius;
         rangeRing.moveTo(startX, startY);
@@ -619,8 +626,8 @@ export class GameEngine {
       
       this.uiLayer.addChild(rangeRing);
       
-      // Draw blocked zones (obstacles with tank padding) as orange
-      this.drawBlockedZones(effectivePos);
+      // Draw shadows for blocked line-of-sight areas
+      this.drawLineOfSightShadows(effectivePos);
     }
 
     this.state.actionQueue.forEach((action, i) => {
@@ -662,87 +669,6 @@ export class GameEngine {
     });
   }
 
-  private drawBlockedZones(effectivePos: Position) {
-    const blockedGraphics = new PIXI.Graphics();
-    const currentTank = this.state.tanks[this.state.currentPlayerIndex];
-    
-    // Sample points around the range ring to find where movement becomes blocked
-    const angleCount = 72; // Check every 5 degrees
-    const distanceSteps = 15; // Check at multiple distances along each angle
-    const minDist = 20; // Start checking from this distance (not from center)
-    
-    // For each angle, find the max distance you can move and draw blocked area beyond
-    const blockedRays: { angle: number; maxDist: number }[] = [];
-    
-    for (let i = 0; i < angleCount; i++) {
-      const angle = (i / angleCount) * Math.PI * 2;
-      let maxValidDist = 0;
-      
-      // Find the maximum distance we can move in this direction
-      for (let d = 1; d <= distanceSteps; d++) {
-        const dist = minDist + ((d / distanceSteps) * (MAX_MOVE_DISTANCE - minDist));
-        const targetX = effectivePos.x + Math.cos(angle) * dist;
-        const targetY = effectivePos.y + Math.sin(angle) * dist;
-        const target = { x: targetX, y: targetY };
-        
-        const canMove = this.isWithinBounds(target, TANK_SIZE) && 
-                        !this.isPositionBlocked(target) && 
-                        !this.isPositionBlockedByTank(target, currentTank.id) &&
-                        this.isPathClear(effectivePos, target, currentTank.id);
-        
-        if (canMove) {
-          maxValidDist = dist;
-        } else {
-          break; // Hit a blocked zone, stop checking further
-        }
-      }
-      
-      blockedRays.push({ angle, maxDist: maxValidDist });
-    }
-    
-    // Draw blocked zones as the area between maxDist and MAX_MOVE_DISTANCE for each angle
-    // Group consecutive angles with similar blocked distances into segments
-    const angleStep = (Math.PI * 2) / angleCount;
-    
-    for (let i = 0; i < blockedRays.length; i++) {
-      const ray = blockedRays[i];
-      const nextRay = blockedRays[(i + 1) % blockedRays.length];
-      
-      // Only draw if there's a blocked area (maxDist < MAX_MOVE_DISTANCE)
-      if (ray.maxDist < MAX_MOVE_DISTANCE - 5 || nextRay.maxDist < MAX_MOVE_DISTANCE - 5) {
-        const startAngle = ray.angle;
-        const endAngle = ray.angle + angleStep;
-        
-        // Draw a trapezoid-like shape from the blocked start to the ring edge
-        const innerDist1 = Math.max(ray.maxDist, minDist);
-        const innerDist2 = Math.max(nextRay.maxDist, minDist);
-        
-        // Only draw if there's actually a blocked region
-        if (innerDist1 < MAX_MOVE_DISTANCE - 5 || innerDist2 < MAX_MOVE_DISTANCE - 5) {
-          blockedGraphics.moveTo(
-            effectivePos.x + Math.cos(startAngle) * innerDist1,
-            effectivePos.y + Math.sin(startAngle) * innerDist1
-          );
-          blockedGraphics.lineTo(
-            effectivePos.x + Math.cos(startAngle) * MAX_MOVE_DISTANCE,
-            effectivePos.y + Math.sin(startAngle) * MAX_MOVE_DISTANCE
-          );
-          blockedGraphics.arc(effectivePos.x, effectivePos.y, MAX_MOVE_DISTANCE, startAngle, endAngle);
-          blockedGraphics.lineTo(
-            effectivePos.x + Math.cos(endAngle) * innerDist2,
-            effectivePos.y + Math.sin(endAngle) * innerDist2
-          );
-          blockedGraphics.lineTo(
-            effectivePos.x + Math.cos(startAngle) * innerDist1,
-            effectivePos.y + Math.sin(startAngle) * innerDist1
-          );
-          blockedGraphics.fill({ color: 0xff6600, alpha: 0.25 });
-        }
-      }
-    }
-    
-    this.uiLayer.addChild(blockedGraphics);
-  }
 
   public setActionType(type: 'move' | 'shoot') {
     if (this.isDestroyed) return;
@@ -756,6 +682,81 @@ export class GameEngine {
     this.state.actionQueue = [];
     this.drawActionMarkers(); // Redraw to update range ring position
     this.emitState();
+  }
+
+  private drawLineOfSightShadows(effectivePos: Position) {
+    const shadowGraphics = new PIXI.Graphics();
+    const currentTank = this.state.tanks[this.state.currentPlayerIndex];
+    
+    // Cast rays to find where line of sight is blocked
+    const angleCount = 90; // Check every 4 degrees for smooth shadows
+    const distanceSteps = 25;
+    const minDist = 10;
+    
+    // For each angle, find where movement becomes blocked
+    const rays: { angle: number; blockedDist: number; maxDist: number }[] = [];
+    
+    for (let i = 0; i < angleCount; i++) {
+      const angle = (i / angleCount) * Math.PI * 2;
+      let blockedAt = MAX_MOVE_DISTANCE; // Distance where it becomes blocked
+      let lastValidDist = MAX_MOVE_DISTANCE;
+      
+      for (let d = 1; d <= distanceSteps; d++) {
+        const dist = minDist + ((d / distanceSteps) * (MAX_MOVE_DISTANCE - minDist));
+        const targetX = effectivePos.x + Math.cos(angle) * dist;
+        const targetY = effectivePos.y + Math.sin(angle) * dist;
+        const target = { x: targetX, y: targetY };
+        
+        const canMove = this.isWithinBounds(target, TANK_SIZE / 2) && 
+                        !this.isPositionBlocked(target) && 
+                        !this.isPositionBlockedByTank(target, currentTank.id) &&
+                        this.isPathClear(effectivePos, target, currentTank.id);
+        
+        if (!canMove && blockedAt === MAX_MOVE_DISTANCE) {
+          blockedAt = lastValidDist;
+        }
+        if (canMove) {
+          lastValidDist = dist;
+        }
+      }
+      
+      rays.push({ angle, blockedDist: blockedAt, maxDist: MAX_MOVE_DISTANCE });
+    }
+    
+    // Draw shadow wedges for blocked areas
+    const angleStep = (Math.PI * 2) / angleCount;
+    
+    for (let i = 0; i < rays.length; i++) {
+      const ray = rays[i];
+      const nextRay = rays[(i + 1) % rays.length];
+      
+      // Only draw shadow if there's a blocked area
+      if (ray.blockedDist < MAX_MOVE_DISTANCE - 5 || nextRay.blockedDist < MAX_MOVE_DISTANCE - 5) {
+        const innerDist1 = ray.blockedDist;
+        const innerDist2 = nextRay.blockedDist;
+        const startAngle = ray.angle;
+        const endAngle = ray.angle + angleStep;
+        
+        // Draw shadow from blocked distance to max range
+        shadowGraphics.moveTo(
+          effectivePos.x + Math.cos(startAngle) * innerDist1,
+          effectivePos.y + Math.sin(startAngle) * innerDist1
+        );
+        shadowGraphics.lineTo(
+          effectivePos.x + Math.cos(startAngle) * MAX_MOVE_DISTANCE,
+          effectivePos.y + Math.sin(startAngle) * MAX_MOVE_DISTANCE
+        );
+        shadowGraphics.arc(effectivePos.x, effectivePos.y, MAX_MOVE_DISTANCE, startAngle, endAngle);
+        shadowGraphics.lineTo(
+          effectivePos.x + Math.cos(endAngle) * innerDist2,
+          effectivePos.y + Math.sin(endAngle) * innerDist2
+        );
+        shadowGraphics.closePath();
+        shadowGraphics.fill({ color: 0x000000, alpha: 0.3 });
+      }
+    }
+    
+    this.uiLayer.addChild(shadowGraphics);
   }
 
   public async executeActions() {
@@ -788,7 +789,8 @@ export class GameEngine {
       if (action.type === 'move') {
         await this.executeMove(tank, sprite, action.targetPosition);
       } else {
-        await this.executeShot(tank, sprite, action.targetPosition);
+        // Use pre-calculated resolvedTarget if available (for consistent hit detection across clients)
+        await this.executeShot(tank, sprite, action.targetPosition, action.resolvedTarget);
       }
 
       if (await this.checkGameOver()) {
@@ -940,8 +942,8 @@ export class GameEngine {
         life: 1,
         maxLife: 1,
         size: 2 + Math.random() * 2,
-        color: 0x8b7355,
-        alpha: 0.4 + Math.random() * 0.2,
+        color: 0x4a5a4a, // Muted green-gray dust
+        alpha: 0.3 + Math.random() * 0.2,
       });
     }
   }
@@ -974,15 +976,16 @@ export class GameEngine {
     };
   }
 
-  private executeShot(tank: Tank, sprite: PIXI.Container, target: Position): Promise<void> {
+  private executeShot(tank: Tank, sprite: PIXI.Container, target: Position, preCalculatedTarget?: Position): Promise<void> {
     return new Promise((resolve) => {
       if (this.isDestroyed) { resolve(); return; }
 
       const turret = sprite.children.find(c => c.label === 'turret') as PIXI.Container;
       if (!turret) { resolve(); return; }
 
-      // Apply accuracy deviation to the intended target
-      const deviatedTarget = this.applyAccuracyDeviation(tank, tank.position, target);
+      // Use pre-calculated target if available (ensures same result on host and guest)
+      // Otherwise calculate deviation (fallback for single-player or legacy)
+      const deviatedTarget = preCalculatedTarget || this.applyAccuracyDeviation(tank, tank.position, target);
       
       // Calculate the world angle to the deviated target
       const worldAngleToTarget = Math.atan2(deviatedTarget.y - tank.position.y, deviatedTarget.x - tank.position.x);
@@ -1326,7 +1329,7 @@ export class GameEngine {
       // Debris/sparks for obstacle hits
       count = 12;
       speed = 2;
-      colors = [0x8b7355, 0x6b5344, 0xaaa080]; // Brown/gray debris colors
+      colors = [0x3a3a3a, 0x4a4a4a, 0x5a5a5a]; // Gray debris colors
     } else {
       // Normal explosion
       count = 15;
@@ -1365,7 +1368,7 @@ export class GameEngine {
         vx: Math.cos(angle) * (1 + Math.random()),
         vy: Math.sin(angle) * (1 + Math.random()),
         life: 1, maxLife: 1, size: 3,
-        color: 0x8b7355, alpha: 0.5,
+        color: 0x4a5a4a, alpha: 0.4,
       });
     }
   }
@@ -1602,7 +1605,7 @@ export class GameEngine {
     // Validate the action (same as handleClick)
     if (this.state.selectedActionType === 'move') {
       const currentTank = this.state.tanks[this.state.currentPlayerIndex];
-      if (!this.isWithinBounds(target, TANK_SIZE)) return;
+      if (!this.isWithinBounds(target, TANK_SIZE / 2)) return;
       if (distance > MAX_MOVE_DISTANCE) return;
       if (this.isPositionBlocked(target)) return;
       if (this.isPositionBlockedByTank(target, currentTank.id)) return;
@@ -1614,11 +1617,19 @@ export class GameEngine {
       if (distance < MIN_FIRE_DISTANCE) return;
     }
 
-    this.state.actionQueue.push({
+    const tank = this.state.tanks[this.state.currentPlayerIndex];
+    const action: QueuedAction = {
       id: Math.random().toString(36).substring(7),
       type: this.state.selectedActionType,
       targetPosition: target,
-    });
+    };
+    
+    // For shots, pre-calculate the accuracy deviation so both host and guest see same result
+    if (action.type === 'shoot') {
+      action.resolvedTarget = this.applyAccuracyDeviation(tank, effectivePos, target);
+    }
+    
+    this.state.actionQueue.push(action);
     
     // Play action queue sound (host hears when guest queues)
     SoundManager.play('actionQueue');
