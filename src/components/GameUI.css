@@ -246,6 +246,24 @@
   color: #fbbf24;
 }
 
+/* You Badge */
+.game-ui__you-badge {
+  color: #fbbf24;
+  font-size: 0.8rem;
+  font-weight: normal;
+}
+
+/* Waiting for opponent */
+.game-ui__waiting {
+  width: 100%;
+  text-align: center;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: #64748b;
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
 /* Mobile */
 @media (max-width: 768px) {
   .game-ui {

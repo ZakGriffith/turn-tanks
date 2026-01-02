@@ -6,12 +6,17 @@ interface GameUIProps {
   onSetActionType: (type: 'move' | 'shoot') => void;
   onClearQueue: () => void;
   onExecute: () => void;
+  isMyTurn?: boolean;
+  localPlayerIndex?: number;
 }
 
-export function GameUI({ state, onSetActionType, onClearQueue, onExecute }: GameUIProps) {
+export function GameUI({ state, onSetActionType, onClearQueue, onExecute, isMyTurn = true, localPlayerIndex }: GameUIProps) {
   const currentTank = state.tanks[state.currentPlayerIndex];
+  const localTank = localPlayerIndex !== undefined ? state.tanks[localPlayerIndex] : null;
   const isPlanning = state.phase === 'planning';
-  const canExecute = state.actionQueue.length > 0 && isPlanning;
+  const canExecute = state.actionQueue.length > 0 && isPlanning && isMyTurn;
+
+  const isLocalPlayerTurn = localPlayerIndex !== undefined ? state.currentPlayerIndex === localPlayerIndex : true;
 
   return (
     <div className="game-ui">
@@ -22,9 +27,14 @@ export function GameUI({ state, onSetActionType, onClearQueue, onExecute }: Game
           style={{ '--color': `#${currentTank.color.toString(16).padStart(6, '0')}` } as React.CSSProperties}
         />
         <div className="game-ui__player-info">
-          <span className="game-ui__player-name">{currentTank.name}</span>
+          <span className="game-ui__player-name">
+            {currentTank.name}
+            {isLocalPlayerTurn && localTank && <span className="game-ui__you-badge"> (You)</span>}
+          </span>
           <span className="game-ui__player-turn">
-            {isPlanning ? 'Planning Phase' : 'Executing...'}
+            {isPlanning 
+              ? (isLocalPlayerTurn ? 'Your Turn - Plan Your Move' : "Opponent's Turn") 
+              : 'Executing...'}
           </span>
         </div>
       </div>
@@ -49,7 +59,7 @@ export function GameUI({ state, onSetActionType, onClearQueue, onExecute }: Game
       </div>
 
       {/* Action Buttons */}
-      {isPlanning && (
+      {isPlanning && isMyTurn && (
         <div className="game-ui__actions">
           <button
             className={`game-ui__action-btn game-ui__action-btn--move ${state.selectedActionType === 'move' ? 'game-ui__action-btn--active' : ''}`}
@@ -69,7 +79,7 @@ export function GameUI({ state, onSetActionType, onClearQueue, onExecute }: Game
       )}
 
       {/* Control Buttons */}
-      {isPlanning && (
+      {isPlanning && isMyTurn && (
         <div className="game-ui__controls">
           <button
             className="game-ui__btn game-ui__btn--clear"
@@ -98,10 +108,17 @@ export function GameUI({ state, onSetActionType, onClearQueue, onExecute }: Game
       )}
 
       {/* Instructions */}
-      {isPlanning && state.actionQueue.length < state.actionsPerTurn && (
+      {isPlanning && isMyTurn && state.actionQueue.length < state.actionsPerTurn && (
         <div className="game-ui__hint">
           Click on the battlefield to queue a{' '}
           <strong>{state.selectedActionType === 'move' ? 'movement' : 'shot'}</strong>
+        </div>
+      )}
+
+      {/* Waiting for opponent */}
+      {isPlanning && !isMyTurn && (
+        <div className="game-ui__waiting">
+          Waiting for opponent...
         </div>
       )}
     </div>

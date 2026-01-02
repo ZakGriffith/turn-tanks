@@ -12,6 +12,8 @@ import {
   BARREL_LENGTH,
   MIN_FIRE_DISTANCE,
   GAME_OVER_DELAY,
+  DEFAULT_ACCURACY,
+  MAX_SHOT_DEVIATION,
 } from './config';
 
 export class GameEngine {
@@ -34,6 +36,7 @@ export class GameEngine {
   private isExecuting = false;
   private isDestroyed = false;
   private isInitialized = false;
+  private localInputEnabled = true; // For multiplayer - disable when not your turn
   private width: number;
   private height: number;
   private parentElement: HTMLElement;
@@ -130,6 +133,7 @@ export class GameEngine {
         turretRotation: 0,
         health: 3,
         maxHealth: 3,
+        accuracy: DEFAULT_ACCURACY,
         color: 0x3b82f6,
         name: 'Blue Tank',
         isAlive: true,
@@ -141,20 +145,14 @@ export class GameEngine {
         turretRotation: 0,
         health: 3,
         maxHealth: 3,
+        accuracy: DEFAULT_ACCURACY,
         color: 0xef4444,
         name: 'Red Tank',
         isAlive: true,
       },
     ];
 
-    // Leave enough room above/below horizontal obstacles for tanks (TANK_SIZE + padding)
-    const edgeGap = TANK_SIZE * 2; // Space from edge for tank movement
-    const obstacles: Obstacle[] = [
-      { id: 'obs1', position: { x: width * 0.3, y: height * 0.25 }, width: 50, height: 100, destructible: false },
-      { id: 'obs2', position: { x: width * 0.7, y: height * 0.55 }, width: 50, height: 120, destructible: false },
-      { id: 'obs3', position: { x: width * 0.5, y: edgeGap + 35 }, width: 80, height: 35, destructible: false },
-      { id: 'obs4', position: { x: width * 0.5, y: height - edgeGap - 35 }, width: 80, height: 35, destructible: false },
-    ];
+    const obstacles = this.generateRandomObstacles(width, height, tanks);
 
     return {
       tanks,
@@ -168,6 +166,129 @@ export class GameEngine {
       mapWidth: width,
       mapHeight: height,
     };
+  }
+
+  private generateRandomObstacles(width: number, height: number, tanks: Tank[]): Obstacle[] {
+    const obstacles: Obstacle[] = [];
+    const obstacleCount = 4 + Math.floor(Math.random() * 2); // 4-5 obstacles
+    const edgePadding = TANK_SIZE * 2; // Keep obstacles away from edges
+    const tankSafeRadius = TANK_SIZE * 3; // Safe zone around tank spawns
+
+    // First, place a blocking obstacle in the center to prevent direct shots between tanks
+    const centerObstacle = this.generateCenterBlockingObstacle(width, height, tanks);
+    if (centerObstacle) {
+      obstacles.push(centerObstacle);
+    }
+
+    // Then place remaining obstacles randomly
+    const remainingCount = obstacleCount - obstacles.length;
+    for (let i = 0; i < remainingCount; i++) {
+      let attempts = 0;
+      const maxAttempts = 50;
+
+      while (attempts < maxAttempts) {
+        attempts++;
+
+        // Random size similar to original obstacles
+        // Mix of tall/narrow and short/wide obstacles
+        const isWide = Math.random() > 0.5;
+        const obsWidth = isWide ? 60 + Math.random() * 40 : 40 + Math.random() * 20; // 60-100 or 40-60
+        const obsHeight = isWide ? 30 + Math.random() * 20 : 80 + Math.random() * 50; // 30-50 or 80-130
+
+        // Random position within bounds
+        const x = edgePadding + obsWidth / 2 + Math.random() * (width - 2 * edgePadding - obsWidth);
+        const y = edgePadding + obsHeight / 2 + Math.random() * (height - 2 * edgePadding - obsHeight);
+
+        const candidate: Obstacle = {
+          id: `obs${obstacles.length}`,
+          position: { x, y },
+          width: obsWidth,
+          height: obsHeight,
+          destructible: false,
+        };
+
+        // Check if valid placement
+        if (this.isObstaclePlacementValid(candidate, obstacles, tanks, tankSafeRadius)) {
+          obstacles.push(candidate);
+          break;
+        }
+      }
+    }
+
+    return obstacles;
+  }
+
+  private generateCenterBlockingObstacle(width: number, height: number, tanks: Tank[]): Obstacle | null {
+    // Place an obstacle in the center that blocks the direct line between tanks
+    // Tanks are at y = height/2, so we need an obstacle that covers that Y position
+    const centerX = width / 2;
+    const centerY = height / 2;
+    
+    // Make it tall enough to block the direct shot path
+    // Randomize position slightly around center
+    const xOffset = (Math.random() - 0.5) * (width * 0.2); // ±10% of width from center
+    const yOffset = (Math.random() - 0.5) * (height * 0.15); // Small Y variance but still blocking center
+    
+    // Prefer tall obstacles for center blocking
+    const obsWidth = 40 + Math.random() * 30; // 40-70
+    const obsHeight = 100 + Math.random() * 60; // 100-160 (tall to block line of sight)
+    
+    const candidate: Obstacle = {
+      id: 'obs0',
+      position: { 
+        x: centerX + xOffset, 
+        y: centerY + yOffset 
+      },
+      width: obsWidth,
+      height: obsHeight,
+      destructible: false,
+    };
+
+    // Verify it doesn't overlap with tank spawns
+    const tankSafeRadius = TANK_SIZE * 3;
+    if (this.isObstaclePlacementValid(candidate, [], tanks, tankSafeRadius)) {
+      return candidate;
+    }
+
+    // Fallback: try dead center if random position failed
+    candidate.position = { x: centerX, y: centerY };
+    if (this.isObstaclePlacementValid(candidate, [], tanks, tankSafeRadius)) {
+      return candidate;
+    }
+
+    return null;
+  }
+
+  private isObstaclePlacementValid(
+    candidate: Obstacle,
+    existing: Obstacle[],
+    tanks: Tank[],
+    tankSafeRadius: number
+  ): boolean {
+    const padding = TANK_SIZE; // Extra padding between obstacles for tank movement
+
+    // Check distance from tank spawns
+    for (const tank of tanks) {
+      const dx = Math.abs(candidate.position.x - tank.position.x);
+      const dy = Math.abs(candidate.position.y - tank.position.y);
+      const minDist = tankSafeRadius + Math.max(candidate.width, candidate.height) / 2;
+      if (dx < minDist && dy < minDist) {
+        return false;
+      }
+    }
+
+    // Check overlap with existing obstacles
+    for (const obs of existing) {
+      const overlapX = Math.abs(candidate.position.x - obs.position.x) < 
+        (candidate.width + obs.width) / 2 + padding;
+      const overlapY = Math.abs(candidate.position.y - obs.position.y) < 
+        (candidate.height + obs.height) / 2 + padding;
+      if (overlapX && overlapY) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   private createTerrain(width: number, height: number) {
@@ -294,6 +415,7 @@ export class GameEngine {
 
   private handleClick(event: PIXI.FederatedPointerEvent) {
     if (this.isDestroyed || this.state.phase !== 'planning' || this.isExecuting) return;
+    if (!this.localInputEnabled) return; // Multiplayer: not your turn
     if (this.state.actionQueue.length >= this.state.actionsPerTurn) return;
 
     const pos = event.global;
@@ -630,7 +752,11 @@ export class GameEngine {
   }
 
   public async executeActions() {
-    if (this.isDestroyed || this.state.actionQueue.length === 0 || this.isExecuting) return;
+    console.log('[GameEngine] executeActions called, queue length:', this.state.actionQueue.length, 'isExecuting:', this.isExecuting);
+    if (this.isDestroyed || this.state.actionQueue.length === 0 || this.isExecuting) {
+      console.log('[GameEngine] executeActions early exit - destroyed:', this.isDestroyed, 'queueEmpty:', this.state.actionQueue.length === 0, 'isExecuting:', this.isExecuting);
+      return;
+    }
     
     this.isExecuting = true;
     this.state.phase = 'executing';
@@ -796,6 +922,34 @@ export class GameEngine {
     }
   }
 
+  // Apply accuracy-based deviation to a shot target
+  private applyAccuracyDeviation(tank: Tank, from: Position, target: Position): Position {
+    const accuracy = tank.accuracy;
+    
+    // At 100% accuracy, no deviation. At 0% accuracy, max deviation.
+    // The deviation decreases as accuracy increases
+    const deviationFactor = (100 - accuracy) / 100;
+    const maxDeviation = MAX_SHOT_DEVIATION * deviationFactor;
+    
+    // Random deviation angle (can be positive or negative)
+    // Use a slight bias toward center (more likely to be accurate than max deviation)
+    const randomFactor = (Math.random() + Math.random()) / 2 - 0.5; // -0.5 to 0.5, biased toward 0
+    const deviation = randomFactor * 2 * maxDeviation;
+    
+    // Calculate distance to target
+    const distance = Math.hypot(target.x - from.x, target.y - from.y);
+    
+    // Calculate original angle and apply deviation
+    const originalAngle = Math.atan2(target.y - from.y, target.x - from.x);
+    const deviatedAngle = originalAngle + deviation;
+    
+    // Calculate new target position at the same distance but with deviated angle
+    return {
+      x: from.x + Math.cos(deviatedAngle) * distance,
+      y: from.y + Math.sin(deviatedAngle) * distance,
+    };
+  }
+
   private executeShot(tank: Tank, sprite: PIXI.Container, target: Position): Promise<void> {
     return new Promise((resolve) => {
       if (this.isDestroyed) { resolve(); return; }
@@ -803,8 +957,11 @@ export class GameEngine {
       const turret = sprite.children.find(c => c.label === 'turret') as PIXI.Container;
       if (!turret) { resolve(); return; }
       
-      // Calculate the world angle to the target
-      const worldAngleToTarget = Math.atan2(target.y - tank.position.y, target.x - tank.position.x);
+      // Apply accuracy deviation to the intended target
+      const deviatedTarget = this.applyAccuracyDeviation(tank, tank.position, target);
+      
+      // Calculate the world angle to the deviated target
+      const worldAngleToTarget = Math.atan2(deviatedTarget.y - tank.position.y, deviatedTarget.x - tank.position.x);
       
       // Calculate barrel tip position (for raycast and muzzle flash)
       const barrelTip = {
@@ -812,9 +969,9 @@ export class GameEngine {
         y: tank.position.y + Math.sin(worldAngleToTarget) * BARREL_LENGTH,
       };
       
-      // Check if shot hits an obstacle (from barrel tip to target)
-      const obstacleHit = this.raycastToObstacle(barrelTip, target);
-      const actualTarget = obstacleHit || target;
+      // Check if shot hits an obstacle (from barrel tip to deviated target)
+      const obstacleHit = this.raycastToObstacle(barrelTip, deviatedTarget);
+      const actualTarget = obstacleHit || deviatedTarget;
       const hitObstacle = obstacleHit !== null;
       
       // Calculate turret rotation relative to tank body
@@ -1287,11 +1444,13 @@ export class GameEngine {
     
     this.tankSprites.forEach((sprite) => this.tankLayer.removeChild(sprite));
     this.tankSprites.clear();
+    this.obstacleLayer.removeChildren(); // Clear old obstacles
     this.uiLayer.removeChildren();
     this.waypointLayer.removeChildren(); // Clear waypoints on reset
     this.particles = [];
     
     this.state = this.createInitialState(this.width, this.height);
+    this.createObstacles(); // Recreate obstacles with new random layout
     this.createTanks();
     this.highlightCurrentTank();
     this.drawActionMarkers(); // Show range ring
@@ -1305,6 +1464,127 @@ export class GameEngine {
 
   public getState(): GameState {
     return { ...this.state };
+  }
+
+  // Check if animations are currently playing
+  public isAnimating(): boolean {
+    return this.isExecuting;
+  }
+
+  // Enable or disable local input (for multiplayer turn control)
+  public setLocalInputEnabled(enabled: boolean) {
+    this.localInputEnabled = enabled;
+  }
+
+  // Sync state from remote (for guest player) - updates positions
+  public syncFromRemote(remoteState: GameState) {
+    if (this.isDestroyed) return;
+
+    // Check if obstacles changed (new game)
+    const obstaclesChanged = JSON.stringify(this.state.obstacles) !== JSON.stringify(remoteState.obstacles);
+    
+    if (obstaclesChanged) {
+      // Recreate obstacles
+      this.obstacleLayer.removeChildren();
+      this.state.obstacles = remoteState.obstacles;
+      this.createObstacles();
+    }
+
+    // Update tank positions and states
+    remoteState.tanks.forEach((remoteTank, index) => {
+      const localTank = this.state.tanks[index];
+      const sprite = this.tankSprites.get(localTank.id);
+      
+      if (sprite) {
+        sprite.position.set(remoteTank.position.x, remoteTank.position.y);
+        sprite.rotation = remoteTank.rotation;
+        
+        const turret = sprite.children.find(c => c.label === 'turret');
+        if (turret) {
+          turret.rotation = remoteTank.turretRotation;
+        }
+
+        // Update health bar
+        const healthBar = sprite.children.find(c => c.label === 'healthBar') as PIXI.Graphics;
+        if (healthBar && remoteTank.health !== localTank.health) {
+          this.updateHealthBar(healthBar, remoteTank);
+        }
+
+        // Handle death
+        if (!remoteTank.isAlive && localTank.isAlive) {
+          sprite.alpha = 0.6;
+          const healthBg = sprite.children.find(c => c.label === 'healthBg');
+          if (healthBg) healthBg.visible = false;
+          if (healthBar) healthBar.visible = false;
+        }
+      }
+
+      // Sync tank state
+      this.state.tanks[index] = { ...remoteTank };
+    });
+
+    // Sync other state
+    this.state.currentPlayerIndex = remoteState.currentPlayerIndex;
+    this.state.actionQueue = [...remoteState.actionQueue];
+    this.state.selectedActionType = remoteState.selectedActionType;
+    this.state.phase = remoteState.phase;
+    this.state.winner = remoteState.winner;
+
+    // Redraw UI elements
+    this.drawActionMarkers();
+    this.highlightCurrentTank();
+
+    // Update local state
+    this.onStateChange({ ...this.state });
+  }
+
+  // Sync only the action queue and game state for execution - DON'T move tanks
+  public syncForExecution(remoteState: GameState) {
+    if (this.isDestroyed) return;
+    
+    console.log('[GameEngine] syncForExecution - keeping tank positions, syncing queue');
+
+    // Sync action queue
+    this.state.actionQueue = [...remoteState.actionQueue];
+    this.state.selectedActionType = remoteState.selectedActionType;
+    this.state.currentPlayerIndex = remoteState.currentPlayerIndex;
+    
+    // Redraw action markers
+    this.drawActionMarkers();
+  }
+
+  // Handle a click from remote player
+  public handleRemoteClick(x: number, y: number) {
+    if (this.isDestroyed || this.state.phase !== 'planning' || this.isExecuting) return;
+    if (this.state.actionQueue.length >= this.state.actionsPerTurn) return;
+
+    const target = { x, y };
+    const effectivePos = this.getEffectivePosition();
+    const distance = Math.hypot(target.x - effectivePos.x, target.y - effectivePos.y);
+
+    // Validate the action (same as handleClick)
+    if (this.state.selectedActionType === 'move') {
+      const currentTank = this.state.tanks[this.state.currentPlayerIndex];
+      if (!this.isWithinBounds(target, TANK_SIZE)) return;
+      if (distance > MAX_MOVE_DISTANCE) return;
+      if (this.isPositionBlocked(target)) return;
+      if (this.isPositionBlockedByTank(target, currentTank.id)) return;
+      if (!this.isPathClear(effectivePos, target, currentTank.id)) return;
+    }
+
+    if (this.state.selectedActionType === 'shoot') {
+      if (!this.isWithinBounds(target, 5)) return;
+      if (distance < MIN_FIRE_DISTANCE) return;
+    }
+
+    this.state.actionQueue.push({
+      id: Math.random().toString(36).substring(7),
+      type: this.state.selectedActionType,
+      targetPosition: target,
+    });
+    
+    this.drawActionMarkers();
+    this.emitState();
   }
 
   public destroy() {

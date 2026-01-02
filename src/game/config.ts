@@ -18,6 +18,10 @@ export const MIN_FIRE_DISTANCE = 50; // Minimum pixels from tank to fire target
 // Projectile Properties
 export const SHELL_SPEED = 1000; // Pixels per second
 
+// Accuracy
+export const DEFAULT_ACCURACY = 50; // 0-100, affects shot spread
+export const MAX_SHOT_DEVIATION = 0.37; // Maximum deviation in radians at 0% accuracy (~21 degrees)
+
 // Visual Effects
 export const GAME_OVER_DELAY = 3000; // Milliseconds to wait before showing game over screen
 

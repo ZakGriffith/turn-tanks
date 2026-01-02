@@ -12,6 +12,7 @@ export interface Tank {
   turretRotation: number;
   health: number;
   maxHealth: number;
+  accuracy: number; // 0-100, affects shot spread
   color: number;
   name: string;
   isAlive: boolean;
