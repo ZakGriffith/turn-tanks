@@ -15,6 +15,7 @@ import {
   DEFAULT_ACCURACY,
   MAX_SHOT_DEVIATION,
 } from './config';
+import { SoundManager } from './SoundManager';
 
 export class GameEngine {
   private app!: PIXI.Application;
@@ -118,6 +119,9 @@ export class GameEngine {
 
     // Animation loop
     this.app.ticker.add(this.update.bind(this));
+
+    // Initialize sounds
+    SoundManager.init().catch(console.warn);
 
     this.isInitialized = true;
     this.drawActionMarkers(); // Show initial range ring
@@ -447,6 +451,9 @@ export class GameEngine {
       targetPosition: target,
     });
     
+    // Play action queue sound
+    SoundManager.play('actionQueue');
+    
     this.drawActionMarkers();
     this.emitState();
   }
@@ -766,8 +773,17 @@ export class GameEngine {
     const sprite = this.tankSprites.get(tank.id);
     if (!sprite) return;
 
+    // Check if there are any move actions - start tank sound once for all moves
+    const hasMoveActions = this.state.actionQueue.some(a => a.type === 'move');
+    if (hasMoveActions) {
+      SoundManager.play('tankMove');
+    }
+
     for (const action of this.state.actionQueue) {
-      if (this.isDestroyed) return;
+      if (this.isDestroyed) {
+        SoundManager.stop('tankMove');
+        return;
+      }
       
       if (action.type === 'move') {
         await this.executeMove(tank, sprite, action.targetPosition);
@@ -776,9 +792,15 @@ export class GameEngine {
       }
 
       if (await this.checkGameOver()) {
+        SoundManager.stop('tankMove');
         this.isExecuting = false;
         return;
       }
+    }
+
+    // Stop tank movement sound after all actions complete
+    if (hasMoveActions) {
+      SoundManager.stop('tankMove');
     }
 
     if (this.isDestroyed) return;
@@ -799,6 +821,8 @@ export class GameEngine {
 
       const turret = sprite.children.find(c => c.label === 'turret');
       if (!turret) { resolve(); return; }
+
+      // Tank movement sound is started in executeActions() and plays continuously
 
       const targetAngle = Math.atan2(target.y - tank.position.y, target.x - tank.position.x) + Math.PI / 2;
       
@@ -956,7 +980,7 @@ export class GameEngine {
 
       const turret = sprite.children.find(c => c.label === 'turret') as PIXI.Container;
       if (!turret) { resolve(); return; }
-      
+
       // Apply accuracy deviation to the intended target
       const deviatedTarget = this.applyAccuracyDeviation(tank, tank.position, target);
       
@@ -1001,6 +1025,8 @@ export class GameEngine {
             y: tank.position.y + Math.sin(finalWorldAngle) * BARREL_LENGTH,
           };
           
+          // Play cannon fire sound when shot actually fires
+          SoundManager.play('cannonFire');
           this.createMuzzleFlash(finalBarrelTip);
           this.animateProjectile(finalBarrelTip, actualTarget, () => {
             if (!this.isDestroyed) {
@@ -1066,6 +1092,9 @@ export class GameEngine {
       if (Math.hypot(tank.position.x - target.x, tank.position.y - target.y) < TANK_SIZE) {
         tank.health--;
         
+        // Play hit sound
+        SoundManager.play('shellHit');
+        
         const sprite = this.tankSprites.get(tank.id);
         if (sprite) {
           const hb = sprite.children.find(c => c.label === 'healthBar') as PIXI.Graphics;
@@ -1076,6 +1105,8 @@ export class GameEngine {
         if (tank.health <= 0) {
           tank.isAlive = false;
           this.stopDamageSmoke(tank.id); // Stop damage smoke before destruction fire
+          // Play explosion sound
+          SoundManager.play('tankExplosion');
           this.destroyTank(tank);
         } else {
           // Update damage smoke based on health percentage
@@ -1425,6 +1456,9 @@ export class GameEngine {
     this.state.selectedActionType = 'move'; // Default to move at start of turn
     this.highlightCurrentTank();
     this.drawActionMarkers(); // Show range ring for new player
+    
+    // Turn start sound disabled for now
+    // SoundManager.play('turnStart');
   }
 
   private highlightCurrentTank() {
@@ -1525,7 +1559,10 @@ export class GameEngine {
 
     // Sync other state
     this.state.currentPlayerIndex = remoteState.currentPlayerIndex;
+    
+    // Sync action queue - sounds are played at the source (handleClick, handleRemoteClick, or guest's React onClick)
     this.state.actionQueue = [...remoteState.actionQueue];
+    
     this.state.selectedActionType = remoteState.selectedActionType;
     this.state.phase = remoteState.phase;
     this.state.winner = remoteState.winner;
@@ -1582,6 +1619,9 @@ export class GameEngine {
       type: this.state.selectedActionType,
       targetPosition: target,
     });
+    
+    // Play action queue sound (host hears when guest queues)
+    SoundManager.play('actionQueue');
     
     this.drawActionMarkers();
     this.emitState();

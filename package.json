@@ -13,6 +13,7 @@
     "deploy:party": "partykit deploy"
   },
   "dependencies": {
+    "@pixi/sound": "^6.0.1",
     "gsap": "^3.14.2",
     "partykit": "^0.0.115",
     "partysocket": "^1.1.10",

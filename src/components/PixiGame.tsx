@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { GameEngine } from '../game/GameEngine';
 import { GameState } from '../game/types';
+import { SoundManager } from '../game/SoundManager';
 import { UseMultiplayerReturn } from '../hooks/useMultiplayer';
 import { GameUI } from './GameUI';
+import { VolumeControl } from './VolumeControl';
 import './PixiGame.css';
 
 const GAME_WIDTH = 900;
@@ -199,11 +201,14 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
   }, [isHost, onMessage]);
 
   // Update engine's local input enabled state when turn changes
+  // ONLY host should have direct engine input - guest sends messages via React onClick
   useEffect(() => {
     if (engineRef.current) {
-      engineRef.current.setLocalInputEnabled(isMyTurn);
+      // Host: enable input on their turn
+      // Guest: NEVER enable direct input (they use React onClick to send to host)
+      engineRef.current.setLocalInputEnabled(isHost && isMyTurn);
     }
-  }, [isMyTurn]);
+  }, [isHost, isMyTurn]);
 
   const handleSetActionType = useCallback((type: 'move' | 'shoot') => {
     if (!isMyTurn) return;
@@ -252,6 +257,7 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
   // Handle clicks on the game canvas
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!isMyTurn || !gameState || gameState.phase !== 'planning') return;
+    if (gameState.actionQueue.length >= gameState.actionsPerTurn) return;
     
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -260,10 +266,11 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
     const y = e.clientY - rect.top;
     
     if (!isHost) {
-      // Guest sends click to host
+      // Guest sends click to host - play sound locally for immediate feedback
+      SoundManager.play('actionQueue');
       sendMessage({ type: 'action', action: 'click', payload: { x, y } } as GameMessage);
     }
-    // Host clicks are handled by the engine directly
+    // Host clicks are handled by the engine directly (which plays the sound)
   }, [isMyTurn, gameState, isHost, sendMessage]);
 
   return (
@@ -273,7 +280,7 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
           ← Menu
         </button>
         <p className="pixi-game__subtitle">TURN TANKS</p>
-        <div className="pixi-game__header-spacer" />
+        <VolumeControl />
       </header>
 
       <div 
