@@ -24,8 +24,8 @@ export interface UseMultiplayerReturn {
 
 // PartyKit host - use localhost for dev, deployed URL for prod
 const PARTYKIT_HOST = import.meta.env.DEV 
-  ? '127.0.0.1:51301' 
-  : 'turn-tanks.your-username.partykit.dev'; // Update this after deploying
+  ? '127.0.0.1:1999' 
+  : 'turn-tanks.zakgriffith.partykit.dev';
 
 // Generate a short, readable room code
 function generateRoomCode(): string {
