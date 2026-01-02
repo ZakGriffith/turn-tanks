@@ -84,9 +84,10 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
 
         // If host, send initial state to guest after a short delay
         // to ensure guest has time to set up their message handler
-        if (isHost) {
+        if (isHost && engine) {
+          const hostEngine = engine; // Capture for closure
           setTimeout(() => {
-            const initialState = engine.getState();
+            const initialState = hostEngine.getState();
             console.log('[PixiGame] Host sending initial state');
             sendMessage(initialState);
           }, 500);
