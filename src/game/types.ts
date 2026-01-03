@@ -42,14 +42,24 @@ export type GamePhase = 'planning' | 'executing' | 'game-over';
 export interface GameState {
   tanks: Tank[];
   obstacles: Obstacle[];
-  currentPlayerIndex: number;
-  actionQueue: QueuedAction[];
-  selectedActionType: ActionType;
+  currentPlayerIndex: number; // Used during execution to track which tank is acting
+  // Separate action queues for each player (for simultaneous planning)
+  playerActionQueues: QueuedAction[][]; // Index 0 = Player 1, Index 1 = Player 2
+  // Track which players have submitted their turn
+  playersReady: boolean[];
+  // Selected action type per player
+  playerSelectedActions: ActionType[];
   phase: GamePhase;
   actionsPerTurn: number;
   winner: string | null;
   mapWidth: number;
   mapHeight: number;
+  // Track which players want to play again (for rematch)
+  playersWantRematch: boolean[];
+  
+  // Legacy field for backwards compatibility (will be removed)
+  actionQueue?: QueuedAction[];
+  selectedActionType?: ActionType;
 }
 
 export interface Particle {

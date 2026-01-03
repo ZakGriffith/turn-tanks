@@ -199,9 +199,9 @@ export function LandingPage({ multiplayer, onStartGame }: LandingPageProps) {
           {/* Initial State - Show Create/Join Options (only if no invite) */}
           {state.status === 'disconnected' && !inviteCode && (
             <div className="landing__lobby-actions">
-              <button className="landing__create-btn" onClick={handleCreateRoom}>
-                <span className="landing__create-btn-icon">🎮</span>
-                <span className="landing__create-btn-text">Create Room</span>
+              <button className="landing__create-btn landing__create-btn--primary" onClick={handleCreateRoom}>
+                <span className="landing__create-btn-icon">⚔️</span>
+                <span className="landing__create-btn-text">Create Room & Fight</span>
               </button>
               
               <div className="landing__divider">
@@ -232,6 +232,22 @@ export function LandingPage({ multiplayer, onStartGame }: LandingPageProps) {
                   </button>
                 </div>
               )}
+            </div>
+          )}
+          
+          {/* Host waiting for opponent - show Start Fight button */}
+          {state.isHost && state.status !== 'disconnected' && state.status !== 'error' && (
+            <div className="landing__host-actions">
+              <button 
+                className={`landing__start-btn-inline ${!canStart ? 'landing__start-btn-inline--disabled' : ''}`}
+                onClick={handleStartGame}
+                disabled={!canStart}
+              >
+                <span className="landing__start-btn-icon-inline">⚔️</span>
+                <span className="landing__start-btn-text-inline">
+                  {canStart ? 'Start Fight!' : 'Waiting for Opponent...'}
+                </span>
+              </button>
             </div>
           )}
 
@@ -283,17 +299,6 @@ export function LandingPage({ multiplayer, onStartGame }: LandingPageProps) {
             </div>
           </div>
         </div>
-
-        <button 
-          className={`landing__start-btn ${!canStart ? 'landing__start-btn--disabled' : ''}`}
-          onClick={handleStartGame}
-          disabled={!canStart}
-        >
-          <span className="landing__start-btn-text">
-            {state.isHost ? 'Start Fight' : 'Waiting for Host...'}
-          </span>
-          <span className="landing__start-btn-icon">⚔️</span>
-        </button>
 
         <footer className="landing__footer">
           <p>Share the room code or link with a friend to battle!</p>

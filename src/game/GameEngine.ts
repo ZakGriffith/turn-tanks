@@ -14,6 +14,10 @@ import {
   GAME_OVER_DELAY,
   DEFAULT_ACCURACY,
   MAX_SHOT_DEVIATION,
+  DIRECT_HIT_DAMAGE,
+  SPLASH_DAMAGE,
+  SPLASH_RADIUS,
+  DIRECT_HIT_RADIUS,
 } from './config';
 import { SoundManager } from './SoundManager';
 
@@ -37,7 +41,7 @@ export class GameEngine {
   private isExecuting = false;
   private isDestroyed = false;
   private isInitialized = false;
-  private localInputEnabled = true; // For multiplayer - disable when not your turn
+  private localPlayerIndex = 0; // Which player "I" am (0 or 1) - set by multiplayer
   private width: number;
   private height: number;
   private parentElement: HTMLElement;
@@ -162,13 +166,16 @@ export class GameEngine {
       tanks,
       obstacles,
       currentPlayerIndex: 0,
-      actionQueue: [],
-      selectedActionType: 'move',
+      // Separate action queues for simultaneous planning
+      playerActionQueues: [[], []], // Player 1 and Player 2
+      playersReady: [false, false],
+      playerSelectedActions: ['move', 'move'],
       phase: 'planning',
       actionsPerTurn: ACTIONS_PER_TURN,
       winner: null,
       mapWidth: width,
       mapHeight: height,
+      playersWantRematch: [false, false],
     };
   }
 
@@ -419,45 +426,43 @@ export class GameEngine {
 
   private handleClick(event: PIXI.FederatedPointerEvent) {
     if (this.isDestroyed || this.state.phase !== 'planning' || this.isExecuting) return;
-    if (!this.localInputEnabled) return; // Multiplayer: not your turn
-    if (this.state.actionQueue.length >= this.state.actionsPerTurn) return;
+    if (!this.canLocalPlayerAddAction()) return;
 
     const pos = event.global;
     const target = { x: pos.x, y: pos.y };
 
-    const effectivePos = this.getEffectivePosition();
+    const myTank = this.state.tanks[this.localPlayerIndex];
+    const effectivePos = this.getEffectivePosition(this.localPlayerIndex);
     const distance = Math.hypot(target.x - effectivePos.x, target.y - effectivePos.y);
+    const selectedAction = this.state.playerSelectedActions[this.localPlayerIndex];
 
     // For move actions, check bounds (tank-sized padding), distance limit, position blocked, and path clearance
-    if (this.state.selectedActionType === 'move') {
-      const currentTank = this.state.tanks[this.state.currentPlayerIndex];
+    if (selectedAction === 'move') {
       if (!this.isWithinBounds(target, TANK_SIZE / 2)) return; // Stay away from edges
       if (distance > MAX_MOVE_DISTANCE) return; // Out of range
       if (this.isPositionBlocked(target)) return; // Can't end on obstacle
-      if (this.isPositionBlockedByTank(target, currentTank.id)) return; // Can't end on another tank
-      if (!this.isPathClear(effectivePos, target, currentTank.id)) return; // Path blocked by obstacle or tank
+      if (this.isPositionBlockedByTank(target, myTank.id)) return; // Can't end on another tank
+      if (!this.isPathClear(effectivePos, target, myTank.id)) return; // Path blocked by obstacle or tank
     }
 
     // For shoot actions, only check basic bounds (small padding) and minimum distance
-    // Fire targets can be placed anywhere - the shot will hit obstacles if in the way
-    if (this.state.selectedActionType === 'shoot') {
+    if (selectedAction === 'shoot') {
       if (!this.isWithinBounds(target, 5)) return; // Just need to be on the map
       if (distance < MIN_FIRE_DISTANCE) return; // Too close to self
     }
 
-    const tank = this.state.tanks[this.state.currentPlayerIndex];
     const action: QueuedAction = {
       id: Math.random().toString(36).substring(7),
-      type: this.state.selectedActionType,
+      type: selectedAction,
       targetPosition: target,
     };
     
     // For shots, pre-calculate the accuracy deviation so both host and guest see same result
     if (action.type === 'shoot') {
-      action.resolvedTarget = this.applyAccuracyDeviation(tank, effectivePos, target);
+      action.resolvedTarget = this.applyAccuracyDeviation(myTank, effectivePos, target);
     }
     
-    this.state.actionQueue.push(action);
+    this.state.playerActionQueues[this.localPlayerIndex].push(action);
     
     // Play action queue sound
     SoundManager.play('actionQueue');
@@ -467,10 +472,12 @@ export class GameEngine {
   }
 
   // Get the tank's effective position after all queued moves
-  private getEffectivePosition(): Position {
-    const tank = this.state.tanks[this.state.currentPlayerIndex];
+  private getEffectivePosition(playerIndex?: number): Position {
+    const idx = playerIndex ?? this.localPlayerIndex;
+    const tank = this.state.tanks[idx];
     let pos = { ...tank.position };
-    for (const action of this.state.actionQueue) {
+    const queue = this.state.playerActionQueues[idx] || [];
+    for (const action of queue) {
       if (action.type === 'move') {
         pos = action.targetPosition;
       }
@@ -591,12 +598,16 @@ export class GameEngine {
   private drawActionMarkers() {
     this.uiLayer.removeChildren();
     this.waypointLayer.removeChildren(); // Clear waypoint layer
-    const tank = this.state.tanks[this.state.currentPlayerIndex];
-    let lastPos = tank.position;
+    
+    // Only show local player's markers (opponent's are hidden during planning)
+    const myTank = this.state.tanks[this.localPlayerIndex];
+    const myQueue = this.state.playerActionQueues[this.localPlayerIndex] || [];
+    const mySelectedAction = this.state.playerSelectedActions[this.localPlayerIndex];
+    let lastPos = myTank.position;
 
     // Draw range ring if move is selected and we can still queue actions
-    if (this.state.selectedActionType === 'move' && this.state.actionQueue.length < this.state.actionsPerTurn) {
-      const effectivePos = this.getEffectivePosition();
+    if (mySelectedAction === 'move' && myQueue.length < this.state.actionsPerTurn && !this.state.playersReady[this.localPlayerIndex]) {
+      const effectivePos = this.getEffectivePosition(this.localPlayerIndex);
       const rangeRing = new PIXI.Graphics();
       
       // Outer glow ring
@@ -630,7 +641,7 @@ export class GameEngine {
       this.drawLineOfSightShadows(effectivePos);
     }
 
-    this.state.actionQueue.forEach((action, i) => {
+    myQueue.forEach((action, i) => {
       if (action.type === 'move') {
         const line = new PIXI.Graphics();
         line.moveTo(lastPos.x, lastPos.y);
@@ -672,21 +683,128 @@ export class GameEngine {
 
   public setActionType(type: 'move' | 'shoot') {
     if (this.isDestroyed) return;
-    this.state.selectedActionType = type;
+    this.state.playerSelectedActions[this.localPlayerIndex] = type;
     this.drawActionMarkers(); // Redraw to show/hide range ring
     this.emitState();
   }
 
   public clearQueue() {
     if (this.isDestroyed) return;
-    this.state.actionQueue = [];
+    this.state.playerActionQueues[this.localPlayerIndex] = [];
+    this.state.playersReady[this.localPlayerIndex] = false;
     this.drawActionMarkers(); // Redraw to update range ring position
+    this.emitState();
+  }
+  
+  // Submit the current player's turn (mark as ready)
+  public submitTurn() {
+    if (this.isDestroyed) return;
+    if (this.state.playersReady[this.localPlayerIndex]) return; // Already submitted
+    
+    this.state.playersReady[this.localPlayerIndex] = true;
+    this.emitState();
+    
+    // Check if both players are ready
+    this.checkBothPlayersReady();
+  }
+  
+  private checkBothPlayersReady() {
+    if (this.state.playersReady[0] && this.state.playersReady[1]) {
+      // Both players ready - start simultaneous execution
+      this.executeSimultaneousActions();
+    }
+  }
+  
+  // Execute both players' actions simultaneously
+  private async executeSimultaneousActions() {
+    if (this.isDestroyed || this.isExecuting) return;
+    
+    this.isExecuting = true;
+    this.state.phase = 'executing';
+    this.emitState();
+    
+    const queue0 = this.state.playerActionQueues[0] || [];
+    const queue1 = this.state.playerActionQueues[1] || [];
+    const maxActions = Math.max(queue0.length, queue1.length);
+    
+    // Check if either player has move actions - start tank sound
+    const hasMoves0 = queue0.some(a => a.type === 'move');
+    const hasMoves1 = queue1.some(a => a.type === 'move');
+    if (hasMoves0 || hasMoves1) {
+      SoundManager.play('tankMove');
+    }
+    
+    // Execute actions in parallel, one step at a time
+    for (let i = 0; i < maxActions; i++) {
+      if (this.isDestroyed) {
+        SoundManager.stop('tankMove');
+        return;
+      }
+      
+      const action0 = queue0[i];
+      const action1 = queue1[i];
+      
+      // Execute both players' actions for this step simultaneously
+      const promises: Promise<void>[] = [];
+      
+      if (action0) {
+        const tank0 = this.state.tanks[0];
+        const sprite0 = this.tankSprites.get(tank0.id);
+        if (sprite0 && tank0.isAlive) {
+          if (action0.type === 'move') {
+            promises.push(this.executeMove(tank0, sprite0, action0.targetPosition));
+          } else {
+            promises.push(this.executeShot(tank0, sprite0, action0.targetPosition, action0.resolvedTarget, 0));
+          }
+        }
+      }
+      
+      if (action1) {
+        const tank1 = this.state.tanks[1];
+        const sprite1 = this.tankSprites.get(tank1.id);
+        if (sprite1 && tank1.isAlive) {
+          if (action1.type === 'move') {
+            promises.push(this.executeMove(tank1, sprite1, action1.targetPosition));
+          } else {
+            promises.push(this.executeShot(tank1, sprite1, action1.targetPosition, action1.resolvedTarget, 1));
+          }
+        }
+      }
+      
+      // Wait for both actions in this step to complete
+      await Promise.all(promises);
+      
+      // Check for game over after each step
+      if (await this.checkGameOver()) {
+        SoundManager.stop('tankMove');
+        this.isExecuting = false;
+        return;
+      }
+    }
+    
+    // Stop tank movement sound
+    SoundManager.stop('tankMove');
+    
+    if (this.isDestroyed) return;
+    
+    // Clear UI and reset for next round
+    this.uiLayer.removeChildren();
+    this.waypointLayer.removeChildren();
+    
+    // Reset for next round
+    this.state.playerActionQueues = [[], []];
+    this.state.playersReady = [false, false];
+    this.state.playerSelectedActions = ['move', 'move'];
+    
+    this.isExecuting = false;
+    this.state.phase = 'planning';
+    this.drawActionMarkers();
     this.emitState();
   }
 
   private drawLineOfSightShadows(effectivePos: Position) {
     const shadowGraphics = new PIXI.Graphics();
-    const currentTank = this.state.tanks[this.state.currentPlayerIndex];
+    const currentTank = this.state.tanks[this.localPlayerIndex];
     
     // Cast rays to find where line of sight is blocked
     const angleCount = 90; // Check every 4 degrees for smooth shadows
@@ -759,62 +877,10 @@ export class GameEngine {
     this.uiLayer.addChild(shadowGraphics);
   }
 
+  // Called when player clicks "Execute" - now means "Submit Turn" for simultaneous play
   public async executeActions() {
-    console.log('[GameEngine] executeActions called, queue length:', this.state.actionQueue.length, 'isExecuting:', this.isExecuting);
-    if (this.isDestroyed || this.state.actionQueue.length === 0 || this.isExecuting) {
-      console.log('[GameEngine] executeActions early exit - destroyed:', this.isDestroyed, 'queueEmpty:', this.state.actionQueue.length === 0, 'isExecuting:', this.isExecuting);
-      return;
-    }
-    
-    this.isExecuting = true;
-    this.state.phase = 'executing';
-    this.emitState();
-
-    const tank = this.state.tanks[this.state.currentPlayerIndex];
-    const sprite = this.tankSprites.get(tank.id);
-    if (!sprite) return;
-
-    // Check if there are any move actions - start tank sound once for all moves
-    const hasMoveActions = this.state.actionQueue.some(a => a.type === 'move');
-    if (hasMoveActions) {
-      SoundManager.play('tankMove');
-    }
-
-    for (const action of this.state.actionQueue) {
-      if (this.isDestroyed) {
-        SoundManager.stop('tankMove');
-        return;
-      }
-      
-      if (action.type === 'move') {
-        await this.executeMove(tank, sprite, action.targetPosition);
-      } else {
-        // Use pre-calculated resolvedTarget if available (for consistent hit detection across clients)
-        await this.executeShot(tank, sprite, action.targetPosition, action.resolvedTarget);
-      }
-
-      if (await this.checkGameOver()) {
-        SoundManager.stop('tankMove');
-        this.isExecuting = false;
-        return;
-      }
-    }
-
-    // Stop tank movement sound after all actions complete
-    if (hasMoveActions) {
-      SoundManager.stop('tankMove');
-    }
-
-    if (this.isDestroyed) return;
-
-    this.uiLayer.removeChildren();
-    this.waypointLayer.removeChildren(); // Clear waypoints after execution
-    this.state.actionQueue = [];
-    this.nextPlayer();
-    
-    this.isExecuting = false;
-    this.state.phase = 'planning';
-    this.emitState();
+    console.log('[GameEngine] executeActions called - submitting turn for player', this.localPlayerIndex);
+    this.submitTurn();
   }
 
   private executeMove(tank: Tank, sprite: PIXI.Container, target: Position): Promise<void> {
@@ -976,7 +1042,7 @@ export class GameEngine {
     };
   }
 
-  private executeShot(tank: Tank, sprite: PIXI.Container, target: Position, preCalculatedTarget?: Position): Promise<void> {
+  private executeShot(tank: Tank, sprite: PIXI.Container, target: Position, preCalculatedTarget?: Position, shooterIndex?: number): Promise<void> {
     return new Promise((resolve) => {
       if (this.isDestroyed) { resolve(); return; }
 
@@ -1011,8 +1077,9 @@ export class GameEngine {
       while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
       while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
       
-      // Calculate duration based on rotation speed
-      const rotationDuration = Math.abs(angleDiff) / TURRET_ROTATION_SPEED;
+      // Calculate duration based on rotation speed, with a minimum for consistency
+      const MIN_TURRET_ROTATION_TIME = 0.3; // Minimum time for turret to aim
+      const rotationDuration = Math.max(MIN_TURRET_ROTATION_TIME, Math.abs(angleDiff) / TURRET_ROTATION_SPEED);
 
       gsap.to(turret, {
         rotation: currentRotation + angleDiff, // Use the shortest path
@@ -1020,6 +1087,9 @@ export class GameEngine {
         ease: 'power2.out',
         onComplete: () => {
           if (this.isDestroyed) { resolve(); return; }
+          
+          // Don't fire if the tank was destroyed during turret rotation (simultaneous combat)
+          if (!tank.isAlive) { resolve(); return; }
           
           // Calculate final barrel tip position after turret rotation
           const finalWorldAngle = sprite.rotation + turret.rotation - Math.PI / 2;
@@ -1033,11 +1103,10 @@ export class GameEngine {
           this.createMuzzleFlash(finalBarrelTip);
           this.animateProjectile(finalBarrelTip, actualTarget, () => {
             if (!this.isDestroyed) {
-              // Only check for tank hits if we didn't hit an obstacle
-              if (!hitObstacle) {
-                this.checkHit(actualTarget);
-              }
-              this.createExplosion(actualTarget.x, actualTarget.y, hitObstacle ? 'obstacle' : 'normal');
+              // Check for hits (direct and splash damage) - always check, even on obstacle hit for splash
+              this.checkHit(actualTarget, shooterIndex);
+              // Create splash explosion (bigger than obstacle hit)
+              this.createExplosion(actualTarget.x, actualTarget.y, hitObstacle ? 'obstacle' : 'splash');
             }
             resolve();
           });
@@ -1086,14 +1155,33 @@ export class GameEngine {
     });
   }
 
-  private checkHit(target: Position) {
+  private checkHit(target: Position, shooterIndex?: number) {
     if (this.isDestroyed) return;
     
+    // Check all tanks for damage (both direct hit and splash)
     this.state.tanks.forEach((tank, i) => {
-      if (i === this.state.currentPlayerIndex || !tank.isAlive) return;
-
-      if (Math.hypot(tank.position.x - target.x, tank.position.y - target.y) < TANK_SIZE) {
-        tank.health--;
+      if (!tank.isAlive) return;
+      // Can't damage yourself with direct hit, but splash can hurt you
+      const isSelf = shooterIndex !== undefined && i === shooterIndex;
+      
+      const distance = Math.hypot(tank.position.x - target.x, tank.position.y - target.y);
+      
+      let damage = 0;
+      let hitType: 'direct' | 'splash' | null = null;
+      
+      // Check for direct hit (not on self)
+      if (!isSelf && distance < DIRECT_HIT_RADIUS) {
+        damage = DIRECT_HIT_DAMAGE;
+        hitType = 'direct';
+      }
+      // Check for splash damage (including self-damage!)
+      else if (distance < SPLASH_RADIUS) {
+        damage = SPLASH_DAMAGE;
+        hitType = 'splash';
+      }
+      
+      if (damage > 0 && hitType) {
+        tank.health -= damage;
         
         // Play hit sound
         SoundManager.play('shellHit');
@@ -1102,17 +1190,19 @@ export class GameEngine {
         if (sprite) {
           const hb = sprite.children.find(c => c.label === 'healthBar') as PIXI.Graphics;
           if (hb) this.updateHealthBar(hb, tank);
-          gsap.to(sprite, { alpha: 0.3, duration: 0.1, repeat: 3, yoyo: true });
+          
+          // Flash effect - more intense for direct hit
+          const flashIntensity = hitType === 'direct' ? 0.3 : 0.5;
+          const flashRepeats = hitType === 'direct' ? 3 : 2;
+          gsap.to(sprite, { alpha: flashIntensity, duration: 0.1, repeat: flashRepeats, yoyo: true });
         }
 
         if (tank.health <= 0) {
           tank.isAlive = false;
-          this.stopDamageSmoke(tank.id); // Stop damage smoke before destruction fire
-          // Play explosion sound
+          this.stopDamageSmoke(tank.id);
           SoundManager.play('tankExplosion');
           this.destroyTank(tank);
         } else {
-          // Update damage smoke based on health percentage
           this.updateDamageSmoke(tank);
         }
       }
@@ -1315,7 +1405,7 @@ export class GameEngine {
     gsap.to(flash, { alpha: 0, duration: 0.12, onComplete: () => { if (!this.isDestroyed) this.effectsLayer.removeChild(flash); } });
   }
 
-  private createExplosion(x: number, y: number, type: 'normal' | 'big' | 'obstacle' = 'normal') {
+  private createExplosion(x: number, y: number, type: 'normal' | 'big' | 'obstacle' | 'splash' = 'normal') {
     if (this.isDestroyed) return;
     
     let count: number, speed: number, colors: number[];
@@ -1325,6 +1415,11 @@ export class GameEngine {
       count = 30;
       speed = 6;
       colors = [0xfbbf24, 0xef4444, 0xff6b00];
+    } else if (type === 'splash') {
+      // Splash explosion - larger area of effect with shockwave ring
+      count = 25;
+      speed = 5;
+      colors = [0xfbbf24, 0xff8c00, 0xef4444, 0xff6b00];
     } else if (type === 'obstacle') {
       // Debris/sparks for obstacle hits
       count = 12;
@@ -1337,7 +1432,7 @@ export class GameEngine {
       colors = [0xfbbf24, 0xef4444, 0xff6b00];
     }
     
-    const particleSize = type === 'big' ? 6 : (type === 'obstacle' ? 3 : 4);
+    const particleSize = type === 'big' ? 6 : (type === 'splash' ? 5 : (type === 'obstacle' ? 3 : 4));
     
     for (let i = 0; i < count; i++) {
       const angle = (Math.PI * 2 * i) / count + Math.random() * 0.5;
@@ -1353,9 +1448,68 @@ export class GameEngine {
       });
     }
     
+    // For splash explosions, add an expanding shockwave ring
+    if (type === 'splash') {
+      this.createSplashRing(x, y);
+    }
+    
     // Screen shake intensity based on explosion type
-    const shakeIntensity = type === 'big' ? 8 : (type === 'obstacle' ? 2 : 3);
+    const shakeIntensity = type === 'big' ? 8 : (type === 'splash' ? 5 : (type === 'obstacle' ? 2 : 3));
     this.screenShake(shakeIntensity);
+  }
+  
+  // Create an expanding shockwave ring for splash explosions
+  private createSplashRing(x: number, y: number) {
+    if (this.isDestroyed) return;
+    
+    const ring = new PIXI.Graphics();
+    ring.circle(0, 0, 10);
+    ring.stroke({ color: 0xff6b00, width: 4, alpha: 0.8 });
+    ring.position.set(x, y);
+    this.effectsLayer.addChild(ring);
+    
+    // Animate the ring expanding to splash radius
+    gsap.to(ring, {
+      width: SPLASH_RADIUS * 2,
+      height: SPLASH_RADIUS * 2,
+      alpha: 0,
+      duration: 0.4,
+      ease: 'power2.out',
+      onUpdate: () => {
+        if (this.isDestroyed) return;
+        ring.clear();
+        const currentRadius = 10 + (SPLASH_RADIUS - 10) * (1 - ring.alpha);
+        ring.circle(0, 0, currentRadius);
+        ring.stroke({ color: 0xff6b00, width: 3 * ring.alpha, alpha: ring.alpha * 0.8 });
+      },
+      onComplete: () => {
+        if (!this.isDestroyed) {
+          this.effectsLayer.removeChild(ring);
+          ring.destroy();
+        }
+      },
+    });
+    
+    // Add a secondary inner ring for visual depth
+    const innerRing = new PIXI.Graphics();
+    innerRing.circle(0, 0, 5);
+    innerRing.fill({ color: 0xffffff, alpha: 0.5 });
+    innerRing.position.set(x, y);
+    this.effectsLayer.addChild(innerRing);
+    
+    gsap.to(innerRing, {
+      width: SPLASH_RADIUS,
+      height: SPLASH_RADIUS,
+      alpha: 0,
+      duration: 0.3,
+      ease: 'power3.out',
+      onComplete: () => {
+        if (!this.isDestroyed) {
+          this.effectsLayer.removeChild(innerRing);
+          innerRing.destroy();
+        }
+      },
+    });
   }
 
   private createDustCloud(x: number, y: number) {
@@ -1449,21 +1603,6 @@ export class GameEngine {
     });
   }
 
-  private nextPlayer() {
-    if (this.isDestroyed) return;
-    let next = (this.state.currentPlayerIndex + 1) % this.state.tanks.length;
-    while (!this.state.tanks[next].isAlive) {
-      next = (next + 1) % this.state.tanks.length;
-    }
-    this.state.currentPlayerIndex = next;
-    this.state.selectedActionType = 'move'; // Default to move at start of turn
-    this.highlightCurrentTank();
-    this.drawActionMarkers(); // Show range ring for new player
-    
-    // Turn start sound disabled for now
-    // SoundManager.play('turnStart');
-  }
-
   private highlightCurrentTank() {
     if (this.isDestroyed) return;
     this.state.tanks.forEach((tank) => {
@@ -1475,9 +1614,15 @@ export class GameEngine {
   public resetGame() {
     if (this.isDestroyed) return;
     
+    // Reset execution state
+    this.isExecuting = false;
+    
     // Clear all damage smoke intervals
     this.damageSmokeIntervals.forEach((interval) => clearInterval(interval));
     this.damageSmokeIntervals.clear();
+    
+    // Clear all effects
+    this.effectsLayer.removeChildren();
     
     this.tankSprites.forEach((sprite) => this.tankLayer.removeChild(sprite));
     this.tankSprites.clear();
@@ -1492,6 +1637,26 @@ export class GameEngine {
     this.highlightCurrentTank();
     this.drawActionMarkers(); // Show range ring
     this.emitState();
+  }
+  
+  // Request a rematch (both players must agree)
+  public requestRematch() {
+    if (this.isDestroyed) return;
+    if (this.state.phase !== 'game-over') return;
+    if (this.state.playersWantRematch[this.localPlayerIndex]) return; // Already requested
+    
+    this.state.playersWantRematch[this.localPlayerIndex] = true;
+    this.emitState();
+    
+    // Check if both players want rematch
+    this.checkBothWantRematch();
+  }
+  
+  private checkBothWantRematch() {
+    if (this.state.playersWantRematch[0] && this.state.playersWantRematch[1]) {
+      // Both players want rematch - reset the game
+      this.resetGame();
+    }
   }
 
   private emitState() {
@@ -1508,9 +1673,22 @@ export class GameEngine {
     return this.isExecuting;
   }
 
-  // Enable or disable local input (for multiplayer turn control)
-  public setLocalInputEnabled(enabled: boolean) {
-    this.localInputEnabled = enabled;
+  // Set which player index the local user is (0 or 1)
+  public setLocalPlayerIndex(index: number) {
+    this.localPlayerIndex = index;
+  }
+  
+  // Get the local player's action queue
+  private getLocalPlayerQueue(): QueuedAction[] {
+    return this.state.playerActionQueues[this.localPlayerIndex] || [];
+  }
+  
+  // Check if local player can still add actions
+  private canLocalPlayerAddAction(): boolean {
+    const queue = this.getLocalPlayerQueue();
+    return queue.length < this.state.actionsPerTurn && 
+           !this.state.playersReady[this.localPlayerIndex] &&
+           this.state.phase === 'planning';
   }
 
   // Sync state from remote (for guest player) - updates positions
@@ -1520,16 +1698,45 @@ export class GameEngine {
     // Check if obstacles changed (new game)
     const obstaclesChanged = JSON.stringify(this.state.obstacles) !== JSON.stringify(remoteState.obstacles);
     
-    if (obstaclesChanged) {
+    // Check if tank IDs changed (new game - tanks were recreated)
+    const tanksChanged = this.state.tanks.length !== remoteState.tanks.length ||
+      this.state.tanks.some((t, i) => t.id !== remoteState.tanks[i]?.id);
+    
+    if (obstaclesChanged || tanksChanged) {
+      console.log('[GameEngine] New game detected - recreating game elements');
+      
+      // Reset execution state
+      this.isExecuting = false;
+      
+      // Clear all damage smoke intervals
+      this.damageSmokeIntervals.forEach((interval) => clearInterval(interval));
+      this.damageSmokeIntervals.clear();
+      
+      // Clear all effects
+      this.effectsLayer.removeChildren();
+      
       // Recreate obstacles
       this.obstacleLayer.removeChildren();
       this.state.obstacles = remoteState.obstacles;
       this.createObstacles();
+      
+      // Recreate tanks
+      this.tankSprites.forEach((sprite) => this.tankLayer.removeChild(sprite));
+      this.tankSprites.clear();
+      this.state.tanks = remoteState.tanks.map(t => ({ ...t }));
+      this.createTanks();
+      
+      // Clear UI
+      this.uiLayer.removeChildren();
+      this.waypointLayer.removeChildren();
+      this.particles = [];
     }
 
     // Update tank positions and states
     remoteState.tanks.forEach((remoteTank, index) => {
       const localTank = this.state.tanks[index];
+      if (!localTank) return;
+      
       const sprite = this.tankSprites.get(localTank.id);
       
       if (sprite) {
@@ -1563,16 +1770,56 @@ export class GameEngine {
     // Sync other state
     this.state.currentPlayerIndex = remoteState.currentPlayerIndex;
     
-    // Sync action queue - sounds are played at the source (handleClick, handleRemoteClick, or guest's React onClick)
-    this.state.actionQueue = [...remoteState.actionQueue];
+    // For simultaneous turns: merge opponent's queue/ready with our own
+    // Don't overwrite our own queue or ready status
+    const opponentIndex = this.localPlayerIndex === 0 ? 1 : 0;
     
-    this.state.selectedActionType = remoteState.selectedActionType;
+    if (remoteState.playerActionQueues) {
+      // Keep our queue, take opponent's queue from remote
+      this.state.playerActionQueues[opponentIndex] = [...(remoteState.playerActionQueues[opponentIndex] || [])];
+    }
+    if (remoteState.playersReady) {
+      // Keep our ready status, take opponent's from remote
+      this.state.playersReady[opponentIndex] = remoteState.playersReady[opponentIndex];
+    }
+    if (remoteState.playerSelectedActions) {
+      // Keep our selection, take opponent's from remote
+      this.state.playerSelectedActions[opponentIndex] = remoteState.playerSelectedActions[opponentIndex];
+    }
+    
+    // Sync rematch status (merge opponent's with ours)
+    if (remoteState.playersWantRematch) {
+      this.state.playersWantRematch[opponentIndex] = remoteState.playersWantRematch[opponentIndex];
+    }
+    
+    // Check if both players are ready BEFORE we sync phase
+    // This ensures we trigger local execution even if remote already started
+    const bothReady = this.state.playersReady[0] && this.state.playersReady[1];
+    const wasPlanning = this.state.phase === 'planning';
+    const shouldExecute = bothReady && wasPlanning && !this.isExecuting;
+    
+    // Check if both players want rematch
+    const bothWantRematch = this.state.playersWantRematch[0] && this.state.playersWantRematch[1];
+    const isGameOver = this.state.phase === 'game-over' || remoteState.phase === 'game-over';
+    
     this.state.phase = remoteState.phase;
     this.state.winner = remoteState.winner;
 
-    // Redraw UI elements
+    // Redraw UI elements (only local player's markers)
     this.drawActionMarkers();
     this.highlightCurrentTank();
+    
+    // Trigger local execution if both players are ready and we haven't started yet
+    if (shouldExecute) {
+      console.log('[GameEngine] Both players ready - triggering local execution');
+      this.executeSimultaneousActions();
+    }
+    
+    // Trigger rematch if both players want it
+    if (bothWantRematch && isGameOver) {
+      console.log('[GameEngine] Both players want rematch - resetting game');
+      this.resetGame();
+    }
 
     // Update local state
     this.onStateChange({ ...this.state });
@@ -1582,60 +1829,19 @@ export class GameEngine {
   public syncForExecution(remoteState: GameState) {
     if (this.isDestroyed) return;
     
-    console.log('[GameEngine] syncForExecution - keeping tank positions, syncing queue');
+    console.log('[GameEngine] syncForExecution - keeping tank positions, syncing queues');
 
-    // Sync action queue
-    this.state.actionQueue = [...remoteState.actionQueue];
-    this.state.selectedActionType = remoteState.selectedActionType;
+    // Sync action queues
+    if (remoteState.playerActionQueues) {
+      this.state.playerActionQueues = remoteState.playerActionQueues.map(q => [...q]);
+    }
+    if (remoteState.playersReady) {
+      this.state.playersReady = [...remoteState.playersReady];
+    }
     this.state.currentPlayerIndex = remoteState.currentPlayerIndex;
     
     // Redraw action markers
     this.drawActionMarkers();
-  }
-
-  // Handle a click from remote player
-  public handleRemoteClick(x: number, y: number) {
-    if (this.isDestroyed || this.state.phase !== 'planning' || this.isExecuting) return;
-    if (this.state.actionQueue.length >= this.state.actionsPerTurn) return;
-
-    const target = { x, y };
-    const effectivePos = this.getEffectivePosition();
-    const distance = Math.hypot(target.x - effectivePos.x, target.y - effectivePos.y);
-
-    // Validate the action (same as handleClick)
-    if (this.state.selectedActionType === 'move') {
-      const currentTank = this.state.tanks[this.state.currentPlayerIndex];
-      if (!this.isWithinBounds(target, TANK_SIZE / 2)) return;
-      if (distance > MAX_MOVE_DISTANCE) return;
-      if (this.isPositionBlocked(target)) return;
-      if (this.isPositionBlockedByTank(target, currentTank.id)) return;
-      if (!this.isPathClear(effectivePos, target, currentTank.id)) return;
-    }
-
-    if (this.state.selectedActionType === 'shoot') {
-      if (!this.isWithinBounds(target, 5)) return;
-      if (distance < MIN_FIRE_DISTANCE) return;
-    }
-
-    const tank = this.state.tanks[this.state.currentPlayerIndex];
-    const action: QueuedAction = {
-      id: Math.random().toString(36).substring(7),
-      type: this.state.selectedActionType,
-      targetPosition: target,
-    };
-    
-    // For shots, pre-calculate the accuracy deviation so both host and guest see same result
-    if (action.type === 'shoot') {
-      action.resolvedTarget = this.applyAccuracyDeviation(tank, effectivePos, target);
-    }
-    
-    this.state.actionQueue.push(action);
-    
-    // Play action queue sound (host hears when guest queues)
-    SoundManager.play('actionQueue');
-    
-    this.drawActionMarkers();
-    this.emitState();
   }
 
   public destroy() {

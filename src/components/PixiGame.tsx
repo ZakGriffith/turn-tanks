@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { GameEngine } from '../game/GameEngine';
 import { GameState } from '../game/types';
-import { SoundManager } from '../game/SoundManager';
 import { UseMultiplayerReturn } from '../hooks/useMultiplayer';
 import { GameUI } from './GameUI';
 import { VolumeControl } from './VolumeControl';
@@ -10,15 +9,10 @@ import './PixiGame.css';
 const GAME_WIDTH = 900;
 const GAME_HEIGHT = 600;
 
-// Message types for multiplayer sync
+// Message types for multiplayer sync (simplified for simultaneous turns)
 type GameMessage = 
-  | { type: 'action'; action: 'setActionType'; payload: 'move' | 'shoot' }
-  | { type: 'action'; action: 'click'; payload: { x: number; y: number } }
-  | { type: 'action'; action: 'clearQueue' }
-  | { type: 'action'; action: 'execute' }
   | { type: 'action'; action: 'reset' }
-  | { type: 'stateSync'; state: GameState }
-  | { type: 'executeActions'; state: GameState }; // Broadcast to trigger animations on guest
+  | { type: 'stateSync'; state: GameState };
 
 interface PixiGameProps {
   onBackToMenu: () => void;
@@ -39,19 +33,14 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
   const { isHost } = multiplayer.state;
   const { sendMessage, onMessage } = multiplayer;
 
-  // Determine which player number this client is (1 = Blue/host, 2 = Red/guest)
+  // Determine which player number this client is (0 = Blue/host, 1 = Red/guest)
   const localPlayerIndex = isHost ? 0 : 1;
 
-  // Check if it's this player's turn
-  const isMyTurn = gameState ? gameState.currentPlayerIndex === localPlayerIndex : false;
-
-  // Sync state to remote player (host sends state updates)
+  // Sync state to remote player (both players send their state for simultaneous turns)
   const syncStateToRemote = useCallback((state: GameState) => {
-    if (isHost) {
-      // Send just the game state - useMultiplayer will wrap it for the server
-      sendMessage(state);
-    }
-  }, [isHost, sendMessage]);
+    // Both players sync their state so opponent can see ready status
+    sendMessage(state);
+  }, [sendMessage]);
 
   // Handle state changes from game engine
   const handleStateChange = useCallback((state: GameState) => {
@@ -81,8 +70,8 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
         engineRef.current = engine;
         setIsLoading(false);
 
-        // Set initial input state - host (Player 1) goes first
-        engine.setLocalInputEnabled(isHost);
+        // Set which player index this client is (for simultaneous turns)
+        engine.setLocalPlayerIndex(localPlayerIndex);
 
         // If host, send initial state to guest after a short delay
         // to ensure guest has time to set up their message handler
@@ -122,39 +111,15 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
         console.log('[PixiGame] Nested message type:', (message.state as { type: string }).type);
       }
       
-      if (message.type === 'stateSync' && !isHost) {
-        // Guest receives state updates from host
-        // The state might be a special command (executeActions) or regular game state
-        const innerData = message.state as { type?: string; state?: GameState } | GameState;
-        
-        // Check if this is an executeActions command wrapped in stateSync
-        if (innerData && typeof innerData === 'object' && 'type' in innerData && innerData.type === 'executeActions') {
-          console.log('[PixiGame] Guest received executeActions command');
-          setWaitingForHost(false);
-          const gameState = innerData.state as GameState;
-          console.log('[PixiGame] Action queue length:', gameState?.actionQueue?.length);
-          if (gameState && engineRef.current) {
-            // Block state syncs while we execute animations
-            blockStateSyncRef.current = true;
-            
-            // Only sync the action queue - DON'T move tanks (so animations can play)
-            engineRef.current.syncForExecution(gameState);
-            console.log('[PixiGame] Calling executeActions on guest engine');
-            engineRef.current.executeActions().then(() => {
-              console.log('[PixiGame] Guest animations complete');
-              blockStateSyncRef.current = false;
-            });
-          } else {
-            console.log('[PixiGame] Missing gameState or engine:', { gameState: !!gameState, engine: !!engineRef.current });
-          }
-          return;
-        }
-        
-        // Skip regular state syncs if currently animating or blocked
+      if (message.type === 'stateSync') {
+        // Both players receive state updates from each other
+        // Skip if currently animating
         if (blockStateSyncRef.current || engineRef.current?.isAnimating()) {
-          console.log('[PixiGame] Skipping stateSync - animations in progress or blocked');
+          console.log('[PixiGame] Skipping stateSync - animations in progress');
           return;
         }
+        
+        const innerData = message.state as { type?: string; state?: GameState } | GameState;
         
         console.log('[PixiGame] Processing stateSync');
         setWaitingForHost(false);
@@ -168,110 +133,58 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
           engineRef.current?.syncFromRemote(gameState);
         }
       } else if (message.type === 'action' && isHost) {
-        // Host receives actions from guest and executes them
+        // Host receives action syncs from guest
         const engine = engineRef.current;
         if (!engine) return;
         
         const actionMessage = message as GameMessage;
         if ('action' in actionMessage) {
           switch (actionMessage.action) {
-            case 'setActionType':
-              engine.setActionType(actionMessage.payload as 'move' | 'shoot');
-              break;
-            case 'click':
-              const payload = actionMessage.payload as { x: number; y: number };
-              engine.handleRemoteClick(payload.x, payload.y);
-              break;
-            case 'clearQueue':
-              engine.clearQueue();
-              break;
-            case 'execute':
-              // Broadcast state with action queue to guest so they can animate too
-              const currentState = engine.getState();
-              sendMessage({ type: 'executeActions', state: currentState });
-              engine.executeActions();
-              break;
             case 'reset':
               engine.resetGame();
               break;
+            // Other actions are handled locally by the guest now
+            // and synced via stateSync
           }
         }
       }
     });
   }, [isHost, onMessage]);
 
-  // Update engine's local input enabled state when turn changes
-  // ONLY host should have direct engine input - guest sends messages via React onClick
-  useEffect(() => {
-    if (engineRef.current) {
-      // Host: enable input on their turn
-      // Guest: NEVER enable direct input (they use React onClick to send to host)
-      engineRef.current.setLocalInputEnabled(isHost && isMyTurn);
-    }
-  }, [isHost, isMyTurn]);
-
+  // With simultaneous turns, both players handle their own actions locally
+  // State sync happens automatically via handleStateChange
   const handleSetActionType = useCallback((type: 'move' | 'shoot') => {
-    if (!isMyTurn) return;
-    
-    if (isHost) {
-      engineRef.current?.setActionType(type);
-    } else {
-      // Guest sends action to host
-      sendMessage({ type: 'action', action: 'setActionType', payload: type } as GameMessage);
-    }
-  }, [isMyTurn, isHost, sendMessage]);
+    engineRef.current?.setActionType(type);
+  }, []);
 
   const handleClearQueue = useCallback(() => {
-    if (!isMyTurn) return;
-    
-    if (isHost) {
-      engineRef.current?.clearQueue();
-    } else {
-      sendMessage({ type: 'action', action: 'clearQueue' } as GameMessage);
-    }
-  }, [isMyTurn, isHost, sendMessage]);
+    engineRef.current?.clearQueue();
+  }, []);
 
   const handleExecute = useCallback(() => {
-    if (!isMyTurn) return;
+    // "Execute" now means "Submit Turn" - mark this player as ready
+    engineRef.current?.executeActions(); // This calls submitTurn internally
     
-    if (isHost) {
-      // Broadcast state with action queue to guest so they can animate too
-      const currentState = engineRef.current?.getState();
-      if (currentState) {
-        sendMessage({ type: 'executeActions', state: currentState });
-      }
-      engineRef.current?.executeActions();
-    } else {
-      sendMessage({ type: 'action', action: 'execute' } as GameMessage);
+    // Sync the ready state
+    const currentState = engineRef.current?.getState();
+    if (currentState) {
+      sendMessage({ type: 'stateSync', state: currentState });
     }
-  }, [isMyTurn, isHost, sendMessage]);
+  }, [sendMessage]);
 
-  const handleReset = useCallback(() => {
-    if (isHost) {
-      engineRef.current?.resetGame();
-    } else {
-      sendMessage({ type: 'action', action: 'reset' } as GameMessage);
+  const handleRematch = useCallback(() => {
+    // Request rematch - both players must agree
+    engineRef.current?.requestRematch();
+    
+    // Sync the rematch state
+    const currentState = engineRef.current?.getState();
+    if (currentState) {
+      sendMessage({ type: 'stateSync', state: currentState });
     }
-  }, [isHost, sendMessage]);
+  }, [sendMessage]);
 
-  // Handle clicks on the game canvas
-  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isMyTurn || !gameState || gameState.phase !== 'planning') return;
-    if (gameState.actionQueue.length >= gameState.actionsPerTurn) return;
-    
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    
-    if (!isHost) {
-      // Guest sends click to host - play sound locally for immediate feedback
-      SoundManager.play('actionQueue');
-      sendMessage({ type: 'action', action: 'click', payload: { x, y } } as GameMessage);
-    }
-    // Host clicks are handled by the engine directly (which plays the sound)
-  }, [isMyTurn, gameState, isHost, sendMessage]);
+  // Note: Canvas clicks are handled directly by PixiJS in the GameEngine
+  // Both players now handle their own clicks locally
 
   return (
     <div className="pixi-game">
@@ -286,7 +199,6 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
       <div 
         className="pixi-game__container" 
         ref={containerRef}
-        onClick={handleCanvasClick}
       >
         {isLoading && (
           <div className="pixi-game__overlay">
@@ -319,20 +231,39 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
             <div className="pixi-game__game-over">
               <h2>VICTORY</h2>
               <p>{gameState.winner} Wins!</p>
+              
+              {/* Rematch status */}
+              <div className="pixi-game__rematch-status">
+                <div className={`pixi-game__rematch-player ${gameState.playersWantRematch?.[0] ? 'ready' : ''}`}>
+                  <span className="pixi-game__rematch-indicator" style={{ background: '#3b82f6' }} />
+                  <span>{gameState.tanks[0]?.name || 'Player 1'}</span>
+                  <span className="pixi-game__rematch-check">
+                    {gameState.playersWantRematch?.[0] ? '✓ Ready' : 'Waiting...'}
+                  </span>
+                </div>
+                <div className={`pixi-game__rematch-player ${gameState.playersWantRematch?.[1] ? 'ready' : ''}`}>
+                  <span className="pixi-game__rematch-indicator" style={{ background: '#ef4444' }} />
+                  <span>{gameState.tanks[1]?.name || 'Player 2'}</span>
+                  <span className="pixi-game__rematch-check">
+                    {gameState.playersWantRematch?.[1] ? '✓ Ready' : 'Waiting...'}
+                  </span>
+                </div>
+              </div>
+              
               <div className="pixi-game__game-over-buttons">
-                <button onClick={handleReset}>Play Again</button>
+                <button 
+                  onClick={handleRematch}
+                  disabled={gameState.playersWantRematch?.[localPlayerIndex]}
+                  className={gameState.playersWantRematch?.[localPlayerIndex] ? 'pixi-game__btn-ready' : ''}
+                >
+                  {gameState.playersWantRematch?.[localPlayerIndex] ? '✓ Waiting for opponent...' : 'Play Again'}
+                </button>
                 <button className="pixi-game__menu-btn" onClick={onBackToMenu}>Main Menu</button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Turn indicator overlay */}
-        {gameState && gameState.phase === 'planning' && !isMyTurn && (
-          <div className="pixi-game__turn-overlay">
-            <span>Opponent's Turn</span>
-          </div>
-        )}
       </div>
 
       {gameState && !isLoading && !error && !waitingForHost && (
@@ -341,7 +272,6 @@ export function PixiGame({ onBackToMenu, multiplayer }: PixiGameProps) {
           onSetActionType={handleSetActionType}
           onClearQueue={handleClearQueue}
           onExecute={handleExecute}
-          isMyTurn={isMyTurn}
           localPlayerIndex={localPlayerIndex}
         />
       )}

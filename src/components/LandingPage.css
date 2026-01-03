@@ -285,6 +285,59 @@
   font-size: 1.5rem;
 }
 
+.landing__create-btn--primary {
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.2) 0%, rgba(251, 191, 36, 0.1) 100%);
+  border-color: #fbbf24;
+  box-shadow: 0 4px 20px rgba(251, 191, 36, 0.3);
+}
+
+.landing__create-btn--primary:hover {
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.3) 0%, rgba(251, 191, 36, 0.15) 100%);
+  box-shadow: 0 6px 30px rgba(251, 191, 36, 0.5);
+  transform: translateY(-2px);
+}
+
+/* Host actions - inline start button */
+.landing__host-actions {
+  margin-top: 1.5rem;
+}
+
+.landing__start-btn-inline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 1.25rem;
+  font-family: 'Courier New', monospace;
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #1a1a2e;
+  background: linear-gradient(180deg, #fbbf24 0%, #d97706 100%);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 0.05em;
+  box-shadow: 0 4px 20px rgba(251, 191, 36, 0.5);
+}
+
+.landing__start-btn-inline:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 30px rgba(251, 191, 36, 0.7);
+}
+
+.landing__start-btn-inline--disabled {
+  background: linear-gradient(180deg, #475569 0%, #334155 100%);
+  color: #94a3b8;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.landing__start-btn-icon-inline {
+  font-size: 1.5rem;
+}
+
 .landing__divider {
   display: flex;
   align-items: center;
