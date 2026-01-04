@@ -572,6 +572,69 @@ export class GameEngine {
     return closestHit;
   }
 
+  // Raycast from 'from' to 'to' and find the first tank hit (if any)
+  // Returns the hit position and the tank index, or null if no tank is hit
+  // shooterIndex is excluded from collision (can't shoot yourself directly)
+  private raycastToTank(from: Position, to: Position, shooterIndex: number): { position: Position; tankIndex: number } | null {
+    let closestHit: { position: Position; tankIndex: number } | null = null;
+    let closestDist = Infinity;
+
+    const tankRadius = TANK_SIZE / 2;
+
+    for (let i = 0; i < this.state.tanks.length; i++) {
+      // Skip the shooter - can't hit yourself with a direct hit
+      if (i === shooterIndex) continue;
+      
+      const tank = this.state.tanks[i];
+      if (!tank.isAlive) continue;
+
+      // Line-circle intersection
+      // Line from 'from' to 'to', circle at tank.position with radius tankRadius
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const fx = from.x - tank.position.x;
+      const fy = from.y - tank.position.y;
+
+      const a = dx * dx + dy * dy;
+      const b = 2 * (fx * dx + fy * dy);
+      const c = fx * fx + fy * fy - tankRadius * tankRadius;
+
+      const discriminant = b * b - 4 * a * c;
+      
+      if (discriminant >= 0) {
+        const sqrtDisc = Math.sqrt(discriminant);
+        
+        // Two potential intersection points (t values along the line)
+        const t1 = (-b - sqrtDisc) / (2 * a);
+        const t2 = (-b + sqrtDisc) / (2 * a);
+        
+        // We want the first intersection that's within the line segment (0 <= t <= 1)
+        // and in front of us (t > 0, but allow small negative for edge cases)
+        let t = -1;
+        if (t1 >= 0 && t1 <= 1) {
+          t = t1;
+        } else if (t2 >= 0 && t2 <= 1) {
+          t = t2;
+        }
+        
+        if (t >= 0) {
+          const hitPos = {
+            x: from.x + t * dx,
+            y: from.y + t * dy,
+          };
+          const dist = Math.hypot(hitPos.x - from.x, hitPos.y - from.y);
+          
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestHit = { position: hitPos, tankIndex: i };
+          }
+        }
+      }
+    }
+
+    return closestHit;
+  }
+
   // Calculate intersection point of two line segments
   // Returns null if they don't intersect
   private lineIntersection(p1: Position, p2: Position, p3: Position, p4: Position): Position | null {
@@ -1062,10 +1125,27 @@ export class GameEngine {
         y: tank.position.y + Math.sin(worldAngleToTarget) * BARREL_LENGTH,
       };
       
-      // Check if shot hits an obstacle (from barrel tip to deviated target)
+      // Check if shot hits an obstacle or tank (from barrel tip to deviated target)
       const obstacleHit = this.raycastToObstacle(barrelTip, deviatedTarget);
-      const actualTarget = obstacleHit || deviatedTarget;
-      const hitObstacle = obstacleHit !== null;
+      const tankHit = this.raycastToTank(barrelTip, deviatedTarget, shooterIndex ?? -1);
+      
+      // Determine what gets hit first (closest to barrel tip)
+      let actualTarget = deviatedTarget;
+      let hitObstacle = false;
+      let hitTankDirectly = false;
+      
+      const obstacleDistance = obstacleHit ? Math.hypot(obstacleHit.x - barrelTip.x, obstacleHit.y - barrelTip.y) : Infinity;
+      const tankDistance = tankHit ? Math.hypot(tankHit.position.x - barrelTip.x, tankHit.position.y - barrelTip.y) : Infinity;
+      
+      if (tankDistance < obstacleDistance && tankDistance < Infinity) {
+        // Tank is hit first - direct hit!
+        actualTarget = tankHit!.position;
+        hitTankDirectly = true;
+      } else if (obstacleDistance < Infinity) {
+        // Obstacle is hit first
+        actualTarget = obstacleHit!;
+        hitObstacle = true;
+      }
       
       // Calculate turret rotation relative to tank body
       const turretAngle = worldAngleToTarget + Math.PI / 2 - sprite.rotation;
@@ -1103,10 +1183,11 @@ export class GameEngine {
           this.createMuzzleFlash(finalBarrelTip);
           this.animateProjectile(finalBarrelTip, actualTarget, () => {
             if (!this.isDestroyed) {
-              // Check for hits (direct and splash damage) - always check, even on obstacle hit for splash
+              // Check for hits (direct and splash damage) - always check for splash
               this.checkHit(actualTarget, shooterIndex);
-              // Create splash explosion (bigger than obstacle hit)
-              this.createExplosion(actualTarget.x, actualTarget.y, hitObstacle ? 'obstacle' : 'splash');
+              // Create explosion - direct hit on tank, obstacle hit, or splash at target
+              const explosionType = hitTankDirectly ? 'splash' : (hitObstacle ? 'obstacle' : 'splash');
+              this.createExplosion(actualTarget.x, actualTarget.y, explosionType);
             }
             resolve();
           });
